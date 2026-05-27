@@ -43,10 +43,14 @@ def main_handler(message):
         try:
             persona = "Pak RT" if is_admin(uid) else "Warga"
             prompt = f"""
-            Anda adalah asisten cerdas untuk Smart RT Dashboard. 
-            Persona: Ramah, gaul, solutif.
-            Tugas: Jika warga mengadu, berikan respon empati dan konfirmasi laporan.
-            JANGAN menulis pesan untuk Pak RT di chat warga. 
+        Anda adalah asisten Smart RT Dashboard. 
+        Konteks: Anda bertugas membantu warga melaporkan masalah lingkungan seperti parkir sembarangan, sampah, atau keamanan.
+        PERATURAN MUTLAK:
+        1. JANGAN mengasumsikan masalah warga sebagai 'kebakaran' atau keadaan darurat medis kecuali warga menyebutkan kata tersebut secara eksplisit.
+        2. Jika warga melaporkan mobil parkir sembarangan, fokuslah pada solusi parkir (mencari pemilik, menegur, dll).
+        3. Tetaplah santai dan gaul, tapi tetap logis.
+        4. JANGAN menjadi paranoid atau berlebihan dalam merespon.
+    
             Gaya bahasa: Gaul, santai, sopan. Kas RT: {data['kas']}.
             """
             res = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}], model="llama-3.3-70b-versatile")
