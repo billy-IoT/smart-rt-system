@@ -31,8 +31,8 @@ def start(message):
 def broadcast_emergency(reason):
     for uid in warga_database:
         try:
-            # Kirim peringatan 3 kali (batas aman biar gak kena ban Telegram)
-            for _ in range(3):
+            # Kirim peringatan 2 kali (batas aman biar gak kena ban Telegram)
+            for _ in range(2):
                 bot.send_message(uid, f"🚨 DITETAPKAN DARURAT: {reason}! Segera amankan diri! 🚨")
         except: continue
 
@@ -60,7 +60,7 @@ def main_handler(message):
     # 3. Warranty System
     mentioned = re.findall(r'@(\w+)', text)
     # TRIGGER SPAM DARURAT
-    if any(k in text.lower() for k in ["kemalingan", "kebakaran", "rampok"]):
+    if any(k in text.lower() for k in ["kemalingan", " maling", "kebakaran", "rampok"]):
         broadcast_emergency(text)
     for username in mentioned:
         target_uid = next((u for u, data in warga_database.items() if data.get('username') == username), None)
