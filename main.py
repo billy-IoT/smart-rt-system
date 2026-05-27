@@ -9,8 +9,7 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# DATA SEMENTARA
-data = {"kas": 0, "parkir": "🟢 Buka"}
+data = {"kas": 5000000, "parkir": "🟢 Buka"}
 user_states = {} 
 pending_approvals = {}
 
@@ -21,9 +20,9 @@ def is_admin(user_id): return str(user_id) == str(ADMIN_ID)
 def start(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row("💰 Lapor Iuran", "📋 Cek Kas & Info")
-    bot.reply_to(message, "🏠 *Smart RT Dashboard* - Halo Warga!", parse_mode='Markdown', reply_markup=markup)
+    bot.reply_to(message, "🏠 *Smart RT Dashboard* - Halo Warga! Ada yang bisa dibantu?", parse_mode='Markdown', reply_markup=markup)
 
-# 3. HANDLER UTAMA
+# 3. HANDLER UTAMA & AI SMART
 @bot.message_handler(content_types=['text', 'photo', 'document'])
 def main_handler(message):
     uid = str(message.from_user.id)
@@ -33,32 +32,44 @@ def main_handler(message):
         return
 
     text = message.text if message.text else ""
+    
+    # Filter Menu
     if text == "💰 Lapor Iuran":
         user_states[uid] = {'state': 'WAITING_NAME'}
         bot.reply_to(message, "Siap! Masukkan nama lengkap Anda:")
+        return
     elif text == "📋 Cek Kas & Info":
         bot.reply_to(message, f"💰 Kas RT: *{data['kas']}*\n🅿️ Parkir: *{data['parkir']}*", parse_mode='Markdown')
-    else:
-        # AI RESPONSE (Fixed Indentation)
-        try:
-            persona = "Pak RT" if is_admin(uid) else "Warga"
-            prompt = f"""
-        Anda adalah asisten Smart RT Dashboard. 
-        Konteks: Anda bertugas membantu warga melaporkan masalah lingkungan seperti parkir sembarangan, sampah, atau keamanan.
-        PERATURAN MUTLAK:
-        1. JANGAN mengasumsikan masalah warga sebagai 'kebakaran' atau keadaan darurat medis kecuali warga menyebutkan kata tersebut secara eksplisit.
-        2. Jika warga melaporkan mobil parkir sembarangan, fokuslah pada solusi parkir (mencari pemilik, menegur, dll).
-        3. Tetaplah santai dan gaul, tapi tetap logis.
-        4. JANGAN menjadi paranoid atau berlebihan dalam merespon.
-    
-            Gaya bahasa: Gaul, santai, sopan. Kas RT: {data['kas']}.
-            """
-            res = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}], model="llama-3.3-70b-versatile")
-            bot.reply_to(message, res.choices[0].message.content)
-        except: 
-            pass
+        return
 
-# 4. STATE MACHINE (Lapor)
+    # AI RESPONSE (Prompt yang lebih stabil)
+    try:
+        persona = "Pak RT" if is_admin(uid) else "Warga"
+        system_prompt = f"""
+        Anda adalah asisten cerdas Smart RT.
+        Gaya bahasa: Ramah, santai, gaul, namun profesional.
+        Tugas: 
+        1. Menjawab pertanyaan warga seputar lingkungan.
+        2. Jika ada keluhan (parkir, sampah, dll), berikan empati & konfirmasi bahwa laporan akan diteruskan ke Pak RT.
+        3. JANGAN melakukan asumsi halu seperti kebakaran/darurat medis kecuali warga secara eksplisit mengatakannya.
+        4. JANGAN forward pesan ke diri sendiri. Cukup jawab warga dengan sopan.
+        """
+        
+        res = client.chat.completions.create(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}], 
+            model="llama-3.3-70b-versatile"
+        )
+        jawaban = res.choices[0].message.content
+        bot.reply_to(message, jawaban)
+
+        # OTOMATIS FORWARD KE PAK RT JIKA TERDETEKSI KELUHAN
+        keywords = ["parkir", "ganggu", "lapor", "masalah", "tolong"]
+        if any(key in text.lower() for key in keywords) and not is_admin(uid):
+            bot.send_message(ADMIN_ID, f"🚨 *Laporan Warga*:\nDari: {message.from_user.first_name} (ID: {uid})\nIsi: {text}")
+    except: 
+        pass
+
+# 4. STATE MACHINE (Lapor Iuran)
 def handle_lapor_steps(message):
     uid = str(message.from_user.id)
     state = user_states[uid]['state']
@@ -77,21 +88,24 @@ def handle_lapor_steps(message):
     elif state == "WAITING_CATEGORY":
         user_states[uid] = {'state': 'WAITING_PHOTO', 'nama': user_states[uid]['nama'], 
                             'jumlah': user_states[uid]['jumlah'], 'kategori': message.text}
-        bot.reply_to(message, "Terakhir, kirim foto/dokumen bukti transfernya:", reply_markup=types.ReplyKeyboardRemove())
+        bot.reply_to(message, "Terakhir, kirim foto bukti transfernya:", reply_markup=types.ReplyKeyboardRemove())
     elif state == "WAITING_PHOTO":
         photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
         if not photo_id:
             bot.reply_to(message, "Woi, kirim fotonya dulu!")
             return
+        
         pending_approvals[uid] = {
             'nama': user_states[uid]['nama'], 'jumlah': user_states[uid]['jumlah'],
             'kategori': user_states[uid]['kategori'], 'photo': photo_id
         }
+        
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"),
                    types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
-        bot.send_photo(ADMIN_ID, photo_id, caption=f"🚨 *Laporan Baru*\nID: {uid}\nNama: {pending_approvals[uid]['nama']}\nKategori: {pending_approvals[uid]['kategori']}\nJumlah: Rp {pending_approvals[uid]['jumlah']}", reply_markup=markup, parse_mode='Markdown')
-        bot.reply_to(message, "Laporan terkirim. Ditunggu Pak RT ya!")
+        
+        bot.send_photo(ADMIN_ID, photo_id, caption=f"🚨 *Laporan Iuran Baru*\nID: {uid}\nNama: {pending_approvals[uid]['nama']}\nKategori: {pending_approvals[uid]['kategori']}\nJumlah: Rp {pending_approvals[uid]['jumlah']}", reply_markup=markup, parse_mode='Markdown')
+        bot.reply_to(message, "Laporan iuran terkirim. Ditunggu Pak RT ya!")
         del user_states[uid]
 
 # 5. APPROVAL
