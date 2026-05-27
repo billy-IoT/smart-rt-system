@@ -1,4 +1,3 @@
-python
 import os
 import telebot
 import google.generativeai as genai
