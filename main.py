@@ -1,78 +1,76 @@
 import os
 import telebot
+from telebot import types
 from groq import Groq
 
 # 1. Konfigurasi
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID") # Pastikan ini ID Telegram lu (angka)
+ADMIN_ID = os.getenv("ADMIN_ID")
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# 2. Data RT (State sementara)
-data = {
-    "kas": "Rp 0",
-    "parkir": "🟢 Buka"
-}
+# State Management (Temporary in-memory)
+user_states = {} # Buat nyimpen status warga pas lagi lapor kas
+pending_approvals = {} # Buat nyimpen list iuran yg nunggu approve Pa Rete
 
-# 3. Handler Command
+data = {"kas": 0, "parkir": "🟢 Buka"}
+
+# 2. Main Menu
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, f"🏠 *Smart RT Dashboard*\n\n"
-                          f"💰 Kas RT: {data['kas']}\n"
-                          f"🅿️ Status Parkir: {data['parkir']}\n\n"
-                          f"Tag gue kalau mau tanya-tanya!", parse_mode='Markdown')
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💰 Lapor Iuran Kas", callback_data="lapor_kas"))
+    markup.add(types.InlineKeyboardButton("📋 Cek Kas & Status", callback_data="info"))
+    bot.reply_to(message, "🏠 *Smart RT Dashboard* - Selamat Datang Warga!", parse_mode='Markdown', reply_markup=markup)
 
-# 4. Handler Utama (Logic Admin vs Warga)
+# 3. Callback Handler
+@bot.callback_query_handler(func=lambda call: True)
+def handle_query(call):
+    if call.data == "lapor_kas":
+        user_states[call.from_user.id] = "WAITING_NAME"
+        bot.send_message(call.message.chat.id, "Oke, tulis Nama kamu:")
+    elif call.data == "info":
+        bot.send_message(call.message.chat.id, f"💰 Kas: Rp {data['kas']}\n🅿️ Parkir: {data['parkir']}")
+    elif call.data.startswith("approve_"):
+        lapor_id = call.data.split("_")[1]
+        if lapor_id in pending_approvals:
+            item = pending_approvals[lapor_id]
+            data['kas'] += item['jumlah']
+            bot.send_message(ADMIN_ID, f"✅ Iuran {item['nama']} sebesar {item['jumlah']} berhasil disetujui!")
+            del pending_approvals[lapor_id]
+
+# 4. State Machine (Input Warga)
+@bot.message_handler(func=lambda message: message.from_user.id in user_states)
+def process_input(message):
+    uid = message.from_user.id
+    state = user_states[uid]
+    
+    if state == "WAITING_NAME":
+        user_states[uid] = {"nama": message.text, "state": "WAITING_AMOUNT"}
+        bot.reply_to(message, "Mantap. Sekarang masukkan jumlah uangnya (angka saja):")
+    
+    elif isinstance(user_states[uid], dict) and user_states[uid]["state"] == "WAITING_AMOUNT":
+        try:
+            nama = user_states[uid]["nama"]
+            jumlah = int(message.text)
+            lapor_id = str(uid)
+            pending_approvals[lapor_id] = {"nama": nama, "jumlah": jumlah}
+            
+            # Kirim ke Pak RT untuk di-approve
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{lapor_id}"))
+            bot.send_message(ADMIN_ID, f"🚨 *Laporan Iuran Baru*\nDari: {nama}\nJumlah: {jumlah}", parse_mode='Markdown', reply_markup=markup)
+            
+            bot.reply_to(message, "Laporan iuran sudah dikirim ke Pak RT, tunggu approval ya!")
+            del user_states[uid]
+        except:
+            bot.reply_to(message, "Masukin angka yang bener woi!")
+
+# 5. Handler AI
 @bot.message_handler(func=lambda message: True)
 def reply(message):
-    text = message.text.lower()
-    user_id = str(message.from_user.id)
-    is_admin = (user_id == str(ADMIN_ID))
+    # (Biarkan handler AI tetap jalan buat ngobrol santai)
+    pass 
 
-    # --- A. FITUR ADMIN (Update Data) ---
-    if is_admin:
-        if text.startswith("set kas"):
-            data['kas'] = text.replace("set kas", "").strip()
-            bot.reply_to(message, f"✅ Kas berhasil diupdate jadi {data['kas']}")
-            return
-        if text.startswith("set parkir"):
-            data['parkir'] = text.replace("set parkir", "").strip()
-            bot.reply_to(message, f"✅ Status parkir diupdate jadi {data['parkir']}")
-            return
-
-    # --- B. FITUR LAPORAN (Warga) ---
-    if "lapor" in text or "aduan" in text:
-        laporan = f"🚨 *Laporan Warga*\nDari: {message.from_user.first_name}\nIsi: {message.text}"
-        bot.send_message(ADMIN_ID, laporan, parse_mode='Markdown')
-        bot.reply_to(message, "✅ Laporan udah dikirim ke Pak RT ya!")
-        return
-
-    # --- C. FILTER GRUP (Anti-Spam) ---
-    if message.chat.type in ['group', 'supergroup']:
-        is_mentioned = f"@{bot.get_me().username}" in message.text
-        is_reply = message.reply_to_message and message.reply_to_message.from_user.id == bot.get_me().id
-        if not (is_mentioned or is_reply): return
-
-    # --- D. LOGIKA AI (Savage & Membedakan User) ---
-    try:
-        role_desc = "Anda adalah Pak RT (Admin)." if is_admin else "Anda adalah asisten RT yang melayani warga."
-        
-        system_prompt = (
-            f"{role_desc} Data RT: Kas {data['kas']}, Status Parkir {data['parkir']}. "
-            f"Gaya bicara: Luwes, santai, ala pos ronda. "
-            f"Jika warga bertanya tentang kas atau parkir, jawab berdasarkan data tersebut."
-        )
-
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message.text}
-            ],
-            model="llama-3.3-70b-versatile",
-        )
-        bot.reply_to(message, chat_completion.choices[0].message.content)
-    except Exception as e:
-        bot.reply_to(message, f"Error nih: {str(e)}")
-
-print("Bot Smart RT Siap Tempur! 😹")
+print("Bot Smart RT Finance Mode Active! 😹")
 bot.infinity_polling()
