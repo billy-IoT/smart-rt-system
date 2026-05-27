@@ -1,34 +1,28 @@
+```python
 import os
-import logging
-import requests
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+import telebot
+import google.generativeai as genai
 
-logging.basicConfig(level=logging.INFO)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Ganti 'v1beta' ke 'v1' biar lebih stabil
-API_KEY = os.getenv('AI_TOKEN')
-MODEL = "gemini-1.5-flash"
-URL = f"https://generativelanguage.googleapis.com/v1/models/{MODEL}:generateContent?key={API_KEY}"
+bot = telebot.TeleBot(BOT_TOKEN)
 
-async def ai_handler(update, context):
+genai.configure(api_key=GEMINI_API_KEY)
+
+model = genai.GenerativeModel("gemini-2.0-flash")
+
+@bot.message_handler(func=lambda message: True)
+def reply(message):
     try:
-        # Kirim prompt ke Google Gemini via HTTP Request
-        payload = {"contents": [{"parts": [{"text": update.message.text}]}]}
-        response = requests.post(URL, json=payload).json()
-        
-        # Ambil jawaban AI dengan aman
-        answer = response['candidates'][0]['content']['parts'][0]['text']
-        await update.message.reply_text(answer)
+        response = model.generate_content(message.text)
+
+        bot.reply_to(message, response.text)
+
     except Exception as e:
-        await update.message.reply_text(f"Error AI: {str(e)}")
+        bot.reply_to(message, f"Error 😭\n{str(e)}")
 
-async def start(update, context):
-    await update.message.reply_text("Smart RT Dashboard siap! Silakan tanya.")
+print("Bot nyala 😹")
 
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(os.getenv('TELEGRAM_TOKEN')).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_handler))
-    
-    print("Bot sudah standby...")
-    app.run_polling()
+bot.infinity_polling()
+```
