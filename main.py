@@ -25,4 +25,3 @@ def reply(message):
 print("Bot nyala 😹")
 
 bot.infinity_polling()
-```
