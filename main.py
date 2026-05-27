@@ -70,8 +70,20 @@ def main_handler(message):
         chat_history[uid].append({"role": "user", "content": text})
         if len(chat_history[uid]) > 5: chat_history[uid].pop(0)
         
-        prompt = "Asisten RT. Jawab gaul, sopan, solutif, dilarang halu. Kas RT: " + str(kas_rt['total'])
-        res = client.chat.completions.create(messages=[{"role": "system", "content": prompt}] + chat_history[uid], model="llama-3.3-70b-versatile")
+
+        system_prompt = """
+        Anda adalah asisten cerdas untuk Smart RT. 
+        Tugas Anda:
+        1. Jawab dengan gaya bahasa gaul, sopan, dan solutif (seperti warga lokal).
+        2. Jangan pernah mengarang jawaban (halu) tentang masalah keamanan atau kebakaran.
+        3. Fokus pada urusan lingkungan RT, iuran warga, dan informasi jadwal kerja bakti.
+        4. Jika tidak tahu, sarankan warga untuk menghubungi Pak RT secara langsung.
+        5. Kas RT saat ini adalah: """ + str(kas_rt['total'])
+        
+        res = client.chat.completions.create(
+            messages=[{"role": "system", "content": system_prompt}] + chat_history[uid], 
+            model="llama-3.3-70b-versatile"
+        )
         ans = res.choices[0].message.content
         chat_history[uid].append({"role": "assistant", "content": ans})
         bot.reply_to(message, ans)
