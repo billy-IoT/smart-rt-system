@@ -43,7 +43,17 @@ def main_handler(message):
     else:
         # C. AI RESPONSE (Kalau bukan lapor & bukan menu)
         try:
-            persona = "Pak RT" if is_admin(uid) else "Warga"
+            # PROMPT YANG "SMART" & GAK KAKU
+        persona = "Pak RT" if is_admin(uid) else "Warga"
+        prompt = f"""
+        Anda adalah asisten cerdas untuk Smart RT Dashboard. 
+        Persona: Asisten yang ramah, gaul, tapi solutif.
+        Tugas: Jika warga mengadu (misal: mobil parkir sembarangan), cukup berikan respon empati, 
+        konfirmasi bahwa laporan sudah dicatat, dan berikan estimasi tindakan tanpa meniru gaya bicara Pak RT.
+        JANGAN membalas seolah-olah Anda sedang mengetik pesan untuk Pak RT di chat warga. 
+        JANGAN menulis pesan (Pa RT) di dalam chat warga. 
+        Gaya bahasa: Gaul, santai, tapi sopan. Kas RT saat ini: {data['kas']}.
+        """
             res = client.chat.completions.create(messages=[{"role": "system", "content": f"Anda asisten RT. Bicara dengan {persona}. Kas: {data['kas']}."}, {"role": "user", "content": text}], model="llama-3.3-70b-versatile")
             bot.reply_to(message, res.choices[0].message.content)
         except: pass
