@@ -1,53 +1,46 @@
 import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
-from dotenv import load_dotenv
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# Load data rahasia dari .env
-load_dotenv()
-TOKEN = os.getenv('TELEGRAM_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
-
-# Logging biar kamu bisa pantau error di console
+# Setup Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Cek Security Layer (Whitelist ID)
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Akses ditolak! Kamu bukan admin.")
-        return
+# Ambil token dari Railway Variables
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+ADMIN_ID = int(os.getenv('ADMIN_ID') or 0)
 
-    # Menu yang muncul
+# Fungsi untuk menu utama
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("📊 Cek Kas RT", callback_data='cek_kas')],
-        [InlineKeyboardButton("➕ Tambah Iuran", callback_data='tambah_iuran')],
-        [InlineKeyboardButton("⚙️ Status Sistem", callback_data='status')]
+        [InlineKeyboardButton("📊 Cek Kas RT", callback_data='kas')],
+        [InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')],
+        [InlineKeyboardButton("ℹ️ Tentang Sistem", callback_data='info')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text("Halo Pak RT! Selamat datang di Sistem Smart RT. Pilih menu:", reply_markup=reply_markup)
+    await update.message.reply_text("Halo! Selamat datang di Smart RT Dashboard. Silakan pilih menu di bawah:", reply_markup=reply_markup)
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Fungsi untuk menangani klik tombol
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Biar loading-nya ilang
+    await query.answer()
 
-    # Hapus pesan menu (dissapear menu)
-    await query.delete_message()
+    # Menghapus menu setelah diklik
+    await query.edit_message_reply_markup(reply_markup=None)
 
-    # Logika isi jawaban setelah ditekan
-    if query.data == 'cek_kas':
-        await query.message.reply_text("💰 Saldo Kas RT saat ini: Rp 5.000.000")
-    elif query.data == 'tambah_iuran':
-        await query.message.reply_text("Silakan masukkan jumlah iuran (Contoh: /input 50000)")
-    elif query.data == 'status':
-        await query.message.reply_text("✅ Sistem Monitoring: AKTIF\n✅ ESP32-CAM: TERKONEKSI")
+    # Jawaban sesuai menu
+    if query.data == 'kas':
+        await query.edit_message_text("📊 **Info Kas RT:**\nSaldo saat ini: Rp 5.000.000,- (Data diperbarui real-time).")
+    elif query.data == 'parkir':
+        await query.edit_message_text("🅿️ **Info Parkir:**\nArea parkir saat ini terpantau aman dan tertib.")
+    elif query.data == 'info':
+        await query.edit_message_text("ℹ️ **Smart RT System**\nSistem monitoring berbasis AI untuk lingkungan lebih aman.")
 
 if __name__ == '__main__':
+    print("Bot sedang berjalan...")
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(button_click))
     
-    print("Bot sedang berjalan...")
     app.run_polling()
