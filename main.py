@@ -9,193 +9,71 @@ from telegram.ext import (ApplicationBuilder, CommandHandler, CallbackQueryHandl
 # Setup Logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Konfigurasi API
+# Konfigurasi
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID') or 0)
-# Setup AI Client Baru
 client = genai.Client(api_key=os.getenv("AI_TOKEN"))
 
-# State & Data
-INPUT_NOMINAL, UPLOAD_BUKTI = range(2)
+# Data
+INPUT_NOMINAL, INPUT_KATEGORI, UPLOAD_BUKTI = range(3)
 KAS_RT = 5000000
 PARKIR_STATUS = "🟢 Aman (Kosong)"
+KATEGORI_KAS = ["Iuran Bulanan", "Dana Sosial", "Dana Kebersihan", "Lain-lain"]
 
-# --- 1. BACKGROUND MONITORING ---
+# --- 1. MONITORING (Job Queue) ---
 async def check_ai_status(context: ContextTypes.DEFAULT_TYPE):
     global PARKIR_STATUS
-    if datetime.now().second % 20 < 10:
-        PARKIR_STATUS = "🟢 Aman (Kosong)"
-    else:
-        PARKIR_STATUS = "🔴 Menghalangi Jalan!"
+    PARKIR_STATUS = "🔴 Menghalangi Jalan!" if datetime.now().second % 20 > 10 else "🟢 Aman (Kosong)"
 
-# --- 2. AI INTERACTIVE HANDLER ---
+# --- 2. AI INTERACTIVE ---
 async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    system_prompt = f"Kamu asisten Smart RT. Saldo Kas: Rp {KAS_RT:,}. Status Parkir: {PARKIR_STATUS}."
-    
-    try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash', 
-            contents=system_prompt + "\nUser: " + user_text
-        )
-        await update.message.reply_text(response.text)
-    except Exception as e:
-        logging.error(f"AI Error: {e}")
-        await update.message.reply_text("Maaf, asisten AI sedang gangguan.")
-
-# --- 3. START & GREETING ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jam = datetime.now().hour
-    greeting = "Selamat Pagi" if 5 <= jam < 12 else "Selamat Siang" if 12 <= jam < 15 else "Selamat Sore" if 15 <= jam < 18 else "Selamat Malam"
-    
-    if update.message.chat.type == 'private':
-        welcome_text = f"🏠 **Smart RT Dashboard**\n{greeting} warga! Pilih menu:"
-        keyboard = [[InlineKeyboardButton("💰 Lapor Kas", callback_data='lapor'), InlineKeyboardButton("📊 Cek Kas", callback_data='kas')],
-                    [InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')]]
-    else:
-        welcome_text = f"🏠 **Smart RT Dashboard**\n{greeting} semua!"
-        keyboard = [[InlineKeyboardButton("📊 Cek Kas", callback_data='kas'), InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')]]
-    
-    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    return ConversationHandler.END
-
-# --- 4. KAS RT LOGIC ---
-async def lapor_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("Masukkan nominal (angka saja):")
-    return INPUT_NOMINAL
-
-async def input_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.text.isdigit():
-        await update.message.reply_text("Mohon angka saja!")
-        return INPUT_NOMINAL
-    context.user_data['nominal'] = int(update.message.text)
-    await update.message.reply_text("Kirim foto bukti transfer:")
-    return UPLOAD_BUKTI
-
-async def upload_bukti(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo_file = update.message.photo[-1].file_id
-    nominal = context.user_data.get('nominal', 0)
-    kb = [[InlineKeyboardButton("✅ Approve", callback_data='app_yes'), InlineKeyboardButton("❌ Reject", callback_data='app_no')]]
-    await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_file, 
-                                 caption=f"⚠️ Laporan Kas: Rp {nominal:,}\nUser: {update.message.from_user.first_name}",
-                                 reply_markup=InlineKeyboardMarkup(kb))
-    await update.message.reply_text("Laporan terkirim ke Pak RT.")
-    return ConversationHandler.END
-
-async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global KAS_RT
-    query = update.callback_query
-    await query.answer()
-    if query.data == 'app_yes':
-        nominal = int(query.message.caption.split("Rp ")[1].split("\n")[0].replace(",", ""))
-        KAS_RT += nominal
-        await query.edit_message_caption(caption=f"✅ Approved! Total Kas: Rp {KAS_RT:,}")
-    else: await query.edit_message_caption(caption="❌ Ditolak.")
-
-# --- 5. MAIN EXECUTION ---
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Enable Job Queue
-    job_queue = app.job_queue
-    job_queue.run_repeating(check_ai_status, interval=10, first=5)
-    
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lapor_start, pattern='lapor')],
-        states={INPUT_NOMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_nominal)],
-                UPLOAD_BUKTI: [MessageHandler(filters.PHOTO, upload_bukti)]},
-        fallbacks=[CommandHandler("start", start)]
-    )
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(handle_approval, pattern='app_'))
-    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.edit_message_text(f"🅿️ Status: {PARKIR_STATUS}"), pattern='parkir'))
-    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.edit_message_text(f"📊 Saldo: Rp {KAS_RT:,}"), pattern='kas'))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_handler))
-    
-    app.run_polling()    Gunakan data ini untuk menjawab: 
-    - Saldo Kas RT saat ini: Rp {KAS_RT:,}
-    - Status Parkir terkini: {PARKIR_STATUS}
-    Berikan jawaban yang sopan dan informatif.
-    """
-    response = model.generate_content(system_prompt + "\nUser: " + user_text)
+    system_prompt = f"Anda asisten Smart RT. Data Kas: Rp {KAS_RT:,}. Status Parkir: {PARKIR_STATUS}. Jawab dengan sopan."
+    response = client.models.generate_content(model='gemini-2.0-flash', contents=system_prompt + "\nUser: " + user_text)
     await update.message.reply_text(response.text)
 
-# --- 3. START & GREETING (Smart Context) ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    jam = datetime.now().hour
-    greeting = "Selamat Pagi" if 5 <= jam < 12 else "Selamat Siang" if 12 <= jam < 15 else "Selamat Sore" if 15 <= jam < 18 else "Selamat Malam"
-    chat_type = update.message.chat.type
-    
-    if chat_type == 'private':
-        welcome_text = f"🏠 **Smart RT Dashboard (Private)**\n{greeting} warga! Silakan pilih layanan:"
-        keyboard = [
-            [InlineKeyboardButton("💰 Lapor Kas", callback_data='lapor'), InlineKeyboardButton("📊 Cek Kas", callback_data='kas')],
-            [InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')]
-        ]
-    else:
-        welcome_text = f"🏠 **Smart RT Dashboard (Group)**\n{greeting} semuanya! Berikut menu akses publik:"
-        keyboard = [
-            [InlineKeyboardButton("📊 Cek Kas RT", callback_data='kas')],
-            [InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')]
-        ]
-    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-    return ConversationHandler.END
-
-# --- 4. KAS RT LOGIC (Anti-Korupsi) ---
+# --- 3. KAS RT (Kategoris) ---
 async def lapor_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text("Masukkan nominal pembayaran (angka saja):")
+    await update.callback_query.message.reply_text("Masukkan nominal:")
     return INPUT_NOMINAL
 
 async def input_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.text.isdigit():
-        await update.message.reply_text("Mohon masukkan angka saja!")
-        return INPUT_NOMINAL
-    context.user_data['nominal'] = int(update.message.text)
-    await update.message.reply_text("Sekarang, kirim foto bukti transfernya:")
+    context.user_data['nominal'] = update.message.text
+    kb = [[InlineKeyboardButton(k, callback_data=k)] for k in KATEGORI_KAS]
+    await update.message.reply_text("Pilih kategori:", reply_markup=InlineKeyboardMarkup(kb))
+    return INPUT_KATEGORI
+
+async def input_kategori(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    context.user_data['kategori'] = query.data
+    await query.message.reply_text("Kirim bukti foto:")
     return UPLOAD_BUKTI
 
 async def upload_bukti(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    photo_file = update.message.photo[-1].file_id
-    nominal = context.user_data.get('nominal', 0)
-    keyboard = [[InlineKeyboardButton("✅ Approve", callback_data='app_yes'), InlineKeyboardButton("❌ Reject", callback_data='app_no')]]
-    await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_file, 
-                                 caption=f"⚠️ **Laporan Kas Baru!**\nNominal: Rp {nominal:,}\nUser: {update.message.from_user.first_name}\n\nApprove?",
-                                 reply_markup=InlineKeyboardMarkup(keyboard))
-    await update.message.reply_text("Laporan terkirim ke Pak RT.")
+    nominal = context.user_data['nominal']
+    kat = context.user_data['kategori']
+    kb = [[InlineKeyboardButton("✅ Approve", callback_data='app_yes'), InlineKeyboardButton("❌ Reject", callback_data='app_no')]]
+    await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, 
+                                 caption=f"💰 Laporan: {kat}\nNominal: Rp {nominal}\nUser: {update.message.from_user.first_name}",
+                                 reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("Laporan dikirim.")
     return ConversationHandler.END
 
-async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global KAS_RT
-    query = update.callback_query
-    await query.answer()
-    try: nominal = int(query.message.caption.split("Nominal: Rp ")[1].split("\n")[0].replace(",", ""))
-    except: nominal = 0
-    if query.data == 'app_yes':
-        KAS_RT += nominal
-        await query.edit_message_caption(caption=f"✅ Approved!\nTotal Kas: Rp {KAS_RT:,}")
-    else: await query.edit_message_caption(caption="❌ Laporan ditolak.")
-
-# --- 5. MAIN EXECUTION ---
+# --- 4. MAIN ---
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
     app.job_queue.run_repeating(check_ai_status, interval=10, first=5)
     
-    conv_handler = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(lapor_start, pattern='lapor')],
-        states={INPUT_NOMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_nominal)],
-                UPLOAD_BUKTI: [MessageHandler(filters.PHOTO, upload_bukti)]},
-        fallbacks=[CommandHandler("start", start)]
+        states={
+            INPUT_NOMINAL: [MessageHandler(filters.TEXT, input_nominal)],
+            INPUT_KATEGORI: [CallbackQueryHandler(input_kategori)],
+            UPLOAD_BUKTI: [MessageHandler(filters.PHOTO, upload_bukti)]
+        },
+        fallbacks=[CommandHandler("start", lambda u, c: u.message.reply_text("Reset. Ketik /start"))]
     )
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(handle_approval, pattern='app_'))
-    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.edit_message_text(f"🅿️ *Status:* {PARKIR_STATUS}"), pattern='parkir'))
-    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.edit_message_text(f"📊 Saldo: Rp {KAS_RT:,}"), pattern='kas'))
+    app.add_handler(conv)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_handler))
-    
     app.run_polling()
