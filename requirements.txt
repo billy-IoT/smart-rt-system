@@ -1,3 +1,4 @@
-python-telegram-bot[job-queue]>=20.0
-requests
-python-dotenv
+```txt id="9n7r5d"
+pyTelegramBotAPI
+google-generativeai==0.8.5
+```
