@@ -1,4 +1,17 @@
+# Folder & File rahasia
 .env
+.venv/
+env/
+venv/
 __pycache__/
 *.pyc
-venv/
+*.pyo
+
+# Konfigurasi IDE
+.vscode/
+.idea/
+
+# Hasil build & data sementara
+*.log
+database.db
+*.sqlite3
