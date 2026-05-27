@@ -1,5 +1,5 @@
-python-telegram-bot>=20.0
-python-dotenv
+python-telegram-bot[job-queue]>=20.0
 google-generativeai
 requests
 Flask
+python-dotenv
