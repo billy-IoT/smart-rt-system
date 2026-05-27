@@ -33,7 +33,21 @@ def main_handler(message):
         return
 
     text = message.text if message.text else ""
+    # ... di dalam main_handler setelah text = ...
     
+    # LOGIKA BARU:
+    # 1. Kalau yang nge-chat ADMIN (Pak RT), bot harus BAWEL & CERIWIS.
+    # 2. Kalau yang nge-chat WARGA, bot cuma bales kalau di-TAG atau diajak ngobrol langsung.
+    
+    is_tag = f"@{bot.get_me().username}" in text or message.reply_to_message
+    
+    if not is_admin(uid) and not is_tag:
+        # Cuma auto-reply untuk hal penting/laporan (parkir, iuran), sisanya cuekin/balas singkat
+        keywords = ["parkir", "iuran", "lapor", "masalah"]
+        if not any(key in text.lower() for key in keywords):
+            return # Bot "jaga image", nggak usah bales kalau gak penting
+    
+    # ... baru jalankan AI response di bawah ...
     if text == "💰 Lapor Iuran":
         user_states[uid] = {'state': 'WAITING_NAME'}
         bot.reply_to(message, "Siap! Masukkan nama lengkap Anda:")
@@ -64,6 +78,8 @@ def main_handler(message):
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("💬 Buka Chat Warga", url=f"tg://user?id={uid}"))
             bot.send_message(ADMIN_ID, f"🚨 *Laporan Warga*:\nDari: {message.from_user.first_name}\nIsi: {text}", reply_markup=markup)
+            
+    
     except: pass
 
 # 4. STATE MACHINE (Lapor Iuran)
