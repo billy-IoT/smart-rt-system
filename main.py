@@ -1,31 +1,34 @@
 import os
 import logging
-import google.generativeai as genai
-from telegram.ext import ApplicationBuilder, CommandHandler
+import requests
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
 logging.basicConfig(level=logging.INFO)
 
-# 1. Konfigurasi
+# Ganti 'v1beta' ke 'v1' biar lebih stabil
 API_KEY = os.getenv('AI_TOKEN')
-genai.configure(api_key=API_KEY)
+MODEL = "gemini-1.5-flash"
+URL = f"https://generativelanguage.googleapis.com/v1/models/{MODEL}:generateContent?key={API_KEY}"
 
-# 2. Fungsi Detektif
-def print_available_models():
-    print("--- DAFTAR MODEL YANG TERSEDIA UNTUK API KEY INI ---")
+async def ai_handler(update, context):
     try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_methods:
-                print(f"Model: {m.name}")
+        # Kirim prompt ke Google Gemini via HTTP Request
+        payload = {"contents": [{"parts": [{"text": update.message.text}]}]}
+        response = requests.post(URL, json=payload).json()
+        
+        # Ambil jawaban AI dengan aman
+        answer = response['candidates'][0]['content']['parts'][0]['text']
+        await update.message.reply_text(answer)
     except Exception as e:
-        print(f"Gagal akses API: {str(e)}")
+        await update.message.reply_text(f"Error AI: {str(e)}")
 
 async def start(update, context):
-    await update.message.reply_text("Cek log Railway untuk melihat daftar model!")
+    await update.message.reply_text("Smart RT Dashboard siap! Silakan tanya.")
 
 if __name__ == '__main__':
-    # Jalankan detektif sebelum bot jalan
-    print_available_models()
-    
     app = ApplicationBuilder().token(os.getenv('TELEGRAM_TOKEN')).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_handler))
+    
+    print("Bot sudah standby...")
     app.run_polling()
