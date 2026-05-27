@@ -9,7 +9,8 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 bot = telebot.TeleBot(BOT_TOKEN)
 
-data = {"kas": 5000000, "parkir": "🟢 Buka"}
+# DATA
+data = {"kas": 0, "parkir": "🟢 Buka"}
 user_states = {} 
 pending_approvals = {}
 
@@ -33,7 +34,6 @@ def main_handler(message):
 
     text = message.text if message.text else ""
     
-    # Filter Menu
     if text == "💰 Lapor Iuran":
         user_states[uid] = {'state': 'WAITING_NAME'}
         bot.reply_to(message, "Siap! Masukkan nama lengkap Anda:")
@@ -42,19 +42,15 @@ def main_handler(message):
         bot.reply_to(message, f"💰 Kas RT: *{data['kas']}*\n🅿️ Parkir: *{data['parkir']}*", parse_mode='Markdown')
         return
 
-    # AI RESPONSE (Prompt yang lebih stabil)
+    # AI RESPONSE
     try:
-        persona = "Pak RT" if is_admin(uid) else "Warga"
         system_prompt = f"""
-        Anda adalah asisten cerdas Smart RT.
-        Gaya bahasa: Ramah, santai, gaul, namun profesional.
-        Tugas: 
-        1. Menjawab pertanyaan warga seputar lingkungan.
-        2. Jika ada keluhan (parkir, sampah, dll), berikan empati & konfirmasi bahwa laporan akan diteruskan ke Pak RT.
-        3. JANGAN melakukan asumsi halu seperti kebakaran/darurat medis kecuali warga secara eksplisit mengatakannya.
-        4. JANGAN forward pesan ke diri sendiri. Cukup jawab warga dengan sopan.
+        Anda adalah asisten cerdas Smart RT. 
+        Tugas: Jawab pertanyaan warga dengan ramah & profesional. 
+        Jika ada keluhan (parkir, sampah), berikan empati dan konfirmasi laporan.
+        JANGAN berhalusinasi tentang kebakaran atau darurat medis.
+        JANGAN forward pesan ke diri sendiri. Cukup jawab warga saja.
         """
-        
         res = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}], 
             model="llama-3.3-70b-versatile"
@@ -62,12 +58,13 @@ def main_handler(message):
         jawaban = res.choices[0].message.content
         bot.reply_to(message, jawaban)
 
-        # OTOMATIS FORWARD KE PAK RT JIKA TERDETEKSI KELUHAN
+        # FORWARD KE PAK RT + TOMBOL SAKTI
         keywords = ["parkir", "ganggu", "lapor", "masalah", "tolong"]
         if any(key in text.lower() for key in keywords) and not is_admin(uid):
-            bot.send_message(ADMIN_ID, f"🚨 *Laporan Warga*:\nDari: {message.from_user.first_name} (ID: {uid})\nIsi: {text}")
-    except: 
-        pass
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("💬 Buka Chat Warga", url=f"tg://user?id={uid}"))
+            bot.send_message(ADMIN_ID, f"🚨 *Laporan Warga*:\nDari: {message.from_user.first_name}\nIsi: {text}", reply_markup=markup)
+    except: pass
 
 # 4. STATE MACHINE (Lapor Iuran)
 def handle_lapor_steps(message):
