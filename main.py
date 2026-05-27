@@ -10,9 +10,9 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 API_KEY = os.getenv('AI_TOKEN')
 
-# Konfigurasi AI
+# Konfigurasi AI - Menggunakan model yang lebih kompatibel
 genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.0-pro')
 
 # Data Statis
 KAS_RT = 5000000
@@ -23,15 +23,15 @@ async def check_ai_status(context):
     global PARKIR_STATUS
     PARKIR_STATUS = "🔴 Tutup" if datetime.now().second % 20 > 10 else "🟢 Buka"
 
-# Fungsi AI Handler (dengan Debug)
+# Fungsi AI Handler
 async def ai_handler(update, context):
     try:
         user_input = update.message.text
-        prompt = f"Saldo Kas: {KAS_RT}. Parkir: {PARKIR_STATUS}. Jawab asisten Smart RT: {user_input}"
+        # Prompt yang lebih spesifik
+        prompt = f"Anda adalah asisten Smart RT. Saldo Kas saat ini Rp {KAS_RT:,}. Status parkir: {PARKIR_STATUS}. Jawab pertanyaan warga dengan sopan: {user_input}"
         response = model.generate_content(prompt)
         await update.message.reply_text(response.text)
     except Exception as e:
-        # Ini akan memberitahu error aslinya kalau API Key salah
         await update.message.reply_text(f"Error AI: {str(e)}")
 
 # Fungsi Start
