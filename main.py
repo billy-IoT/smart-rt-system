@@ -28,6 +28,14 @@ def start(message):
     markup.row("💰 Lapor Iuran", "📋 Cek Kas & Info")
     bot.reply_to(message, "🏠 *Smart RT Dashboard* - Halo Warga!", parse_mode='Markdown', reply_markup=markup)
 
+def broadcast_emergency(reason):
+    for uid in warga_database:
+        try:
+            # Kirim peringatan 3 kali (batas aman biar gak kena ban Telegram)
+            for _ in range(3):
+                bot.send_message(uid, f"🚨 DITETAPKAN DARURAT: {reason}! Segera amankan diri! 🚨")
+        except: continue
+
 # HANDLER UTAMA
 @bot.message_handler(content_types=['text', 'photo'])
 def main_handler(message):
@@ -51,6 +59,9 @@ def main_handler(message):
 
     # 3. Warranty System
     mentioned = re.findall(r'@(\w+)', text)
+    # TRIGGER SPAM DARURAT
+    if any(k in text.lower() for k in ["kemalingan", "kebakaran", "rampok"]):
+        broadcast_emergency(text)
     for username in mentioned:
         target_uid = next((u for u, data in warga_database.items() if data.get('username') == username), None)
         if target_uid:
@@ -71,15 +82,18 @@ def main_handler(message):
         if len(chat_history[uid]) > 5: chat_history[uid].pop(0)
         
 
+        # prompt system
         system_prompt = """
         Anda adalah asisten cerdas untuk Smart RT. 
         Tugas Anda:
         1. Jawab dengan gaya bahasa gaul, sopan, dan solutif (seperti warga lokal).
         2. Jangan pernah mengarang jawaban (halu) tentang masalah keamanan atau kebakaran.
         3. Fokus pada urusan lingkungan RT, iuran warga, dan informasi jadwal kerja bakti.
-        4. Jika tidak tahu, sarankan warga untuk menghubungi Pak RT secara langsung.
-        5. Kas RT saat ini adalah: """ + str(kas_rt['total'])
-        
+        4. Jika tidak tahu, sarankan warga untuk menghubungi Pak RT.
+        5. Kas RT saat ini: """ + str(kas_rt['total']) + """
+        6. Anda memiliki akses pengetahuan luas. Untuk topik sensitif/kriminalitas (pembunuhan/kematian), berikan informasi umum lalu arahkan warga ke pihak berwenang (Polisi/RS).
+        7. Jika terjadi kondisi DARURAT (Kemalingan/Kebakaran), anda WAJIB mengirimkan pesan peringatan ke seluruh warga di database.
+        """
         res = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}] + chat_history[uid], 
             model="llama-3.3-70b-versatile"
