@@ -5,11 +5,11 @@ from groq import Groq
 
 # 1. KONFIGURASI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID") # Masukkan ID angka lu di sini (contoh: 123456789)
+ADMIN_ID = os.getenv("ADMIN_ID")
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# DATA SEMENTARA (In-Memory)
+# DATA SEMENTARA
 data = {"kas": 0, "parkir": "🟢 Buka"}
 user_states = {} 
 pending_approvals = {}
@@ -28,12 +28,10 @@ def start(message):
 def main_handler(message):
     uid = str(message.from_user.id)
     
-    # A. CEK STATE (Lagi lapor?)
     if uid in user_states:
         handle_lapor_steps(message)
         return
 
-    # B. MENU UTAMA
     text = message.text if message.text else ""
     if text == "💰 Lapor Iuran":
         user_states[uid] = {'state': 'WAITING_NAME'}
@@ -41,24 +39,22 @@ def main_handler(message):
     elif text == "📋 Cek Kas & Info":
         bot.reply_to(message, f"💰 Kas RT: *{data['kas']}*\n🅿️ Parkir: *{data['parkir']}*", parse_mode='Markdown')
     else:
-        # C. AI RESPONSE (Kalau bukan lapor & bukan menu)
+        # AI RESPONSE (Fixed Indentation)
         try:
-            # PROMPT YANG "SMART" & GAK KAKU
-        persona = "Pak RT" if is_admin(uid) else "Warga"
-        prompt = f"""
-        Anda adalah asisten cerdas untuk Smart RT Dashboard. 
-        Persona: Asisten yang ramah, gaul, tapi solutif.
-        Tugas: Jika warga mengadu (misal: mobil parkir sembarangan), cukup berikan respon empati, 
-        konfirmasi bahwa laporan sudah dicatat, dan berikan estimasi tindakan tanpa meniru gaya bicara Pak RT.
-        JANGAN membalas seolah-olah Anda sedang mengetik pesan untuk Pak RT di chat warga. 
-        JANGAN menulis pesan (Pa RT) di dalam chat warga. 
-        Gaya bahasa: Gaul, santai, tapi sopan. Kas RT saat ini: {data['kas']}.
-        """
-            res = client.chat.completions.create(messages=[{"role": "system", "content": f"Anda asisten RT. Bicara dengan {persona}. Kas: {data['kas']}."}, {"role": "user", "content": text}], model="llama-3.3-70b-versatile")
+            persona = "Pak RT" if is_admin(uid) else "Warga"
+            prompt = f"""
+            Anda adalah asisten cerdas untuk Smart RT Dashboard. 
+            Persona: Ramah, gaul, solutif.
+            Tugas: Jika warga mengadu, berikan respon empati dan konfirmasi laporan.
+            JANGAN menulis pesan untuk Pak RT di chat warga. 
+            Gaya bahasa: Gaul, santai, sopan. Kas RT: {data['kas']}.
+            """
+            res = client.chat.completions.create(messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}], model="llama-3.3-70b-versatile")
             bot.reply_to(message, res.choices[0].message.content)
-        except: pass
+        except: 
+            pass
 
-# 4. ALUR LAPOR (STATE MACHINE)
+# 4. STATE MACHINE (Lapor)
 def handle_lapor_steps(message):
     uid = str(message.from_user.id)
     state = user_states[uid]['state']
@@ -66,7 +62,6 @@ def handle_lapor_steps(message):
     if state == "WAITING_NAME":
         user_states[uid] = {'state': 'WAITING_AMOUNT', 'nama': message.text}
         bot.reply_to(message, "Mantap! Sekarang masukkan nominalnya (angka saja):")
-        
     elif state == "WAITING_AMOUNT":
         try:
             jumlah = int(message.text)
@@ -75,31 +70,23 @@ def handle_lapor_steps(message):
             markup.row("Iuran Bulanan", "Dana Kematian", "Dana Kebersihan")
             bot.reply_to(message, "Pilih kategori iurannya:", reply_markup=markup)
         except: bot.reply_to(message, "Input harus angka!")
-        
     elif state == "WAITING_CATEGORY":
         user_states[uid] = {'state': 'WAITING_PHOTO', 'nama': user_states[uid]['nama'], 
                             'jumlah': user_states[uid]['jumlah'], 'kategori': message.text}
         bot.reply_to(message, "Terakhir, kirim foto/dokumen bukti transfernya:", reply_markup=types.ReplyKeyboardRemove())
-        
     elif state == "WAITING_PHOTO":
         photo_id = message.photo[-1].file_id if message.photo else (message.document.file_id if message.document else None)
         if not photo_id:
             bot.reply_to(message, "Woi, kirim fotonya dulu!")
             return
-            
         pending_approvals[uid] = {
             'nama': user_states[uid]['nama'], 'jumlah': user_states[uid]['jumlah'],
             'kategori': user_states[uid]['kategori'], 'photo': photo_id
         }
-        
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"),
                    types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
-        
-        bot.send_photo(ADMIN_ID, photo_id, 
-                       caption=f"🚨 *Laporan Baru*\nID: {uid}\nNama: {pending_approvals[uid]['nama']}\nKategori: {pending_approvals[uid]['kategori']}\nJumlah: Rp {pending_approvals[uid]['jumlah']}", 
-                       reply_markup=markup, parse_mode='Markdown')
-        
+        bot.send_photo(ADMIN_ID, photo_id, caption=f"🚨 *Laporan Baru*\nID: {uid}\nNama: {pending_approvals[uid]['nama']}\nKategori: {pending_approvals[uid]['kategori']}\nJumlah: Rp {pending_approvals[uid]['jumlah']}", reply_markup=markup, parse_mode='Markdown')
         bot.reply_to(message, "Laporan terkirim. Ditunggu Pak RT ya!")
         del user_states[uid]
 
@@ -108,7 +95,6 @@ def handle_lapor_steps(message):
 def callback_handler(call):
     if not is_admin(call.from_user.id): return
     action, uid = call.data.split("_")
-    
     if uid in pending_approvals:
         item = pending_approvals.pop(uid)
         if action == "approve":
