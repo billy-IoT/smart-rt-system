@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
                           MessageHandler, filters, ContextTypes, ConversationHandler)
@@ -12,18 +12,17 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 # Konfigurasi API
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID') or 0)
-genai.configure(api_key=os.getenv("AI_TOKEN"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+# Setup AI Client Baru
+client = genai.Client(api_key=os.getenv("AI_TOKEN"))
 
 # State & Data
 INPUT_NOMINAL, UPLOAD_BUKTI = range(2)
 KAS_RT = 5000000
 PARKIR_STATUS = "🟢 Aman (Kosong)"
 
-# --- 1. BACKGROUND MONITORING (Job Queue) ---
+# --- 1. BACKGROUND MONITORING ---
 async def check_ai_status(context: ContextTypes.DEFAULT_TYPE):
     global PARKIR_STATUS
-    # Simulasi status dari sensor
     if datetime.now().second % 20 < 10:
         PARKIR_STATUS = "🟢 Aman (Kosong)"
     else:
@@ -32,9 +31,91 @@ async def check_ai_status(context: ContextTypes.DEFAULT_TYPE):
 # --- 2. AI INTERACTIVE HANDLER ---
 async def ai_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    system_prompt = f"""
-    Kamu adalah asisten virtual Smart RT yang ramah. 
-    Gunakan data ini untuk menjawab: 
+    system_prompt = f"Kamu asisten Smart RT. Saldo Kas: Rp {KAS_RT:,}. Status Parkir: {PARKIR_STATUS}."
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.0-flash', 
+            contents=system_prompt + "\nUser: " + user_text
+        )
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        logging.error(f"AI Error: {e}")
+        await update.message.reply_text("Maaf, asisten AI sedang gangguan.")
+
+# --- 3. START & GREETING ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jam = datetime.now().hour
+    greeting = "Selamat Pagi" if 5 <= jam < 12 else "Selamat Siang" if 12 <= jam < 15 else "Selamat Sore" if 15 <= jam < 18 else "Selamat Malam"
+    
+    if update.message.chat.type == 'private':
+        welcome_text = f"🏠 **Smart RT Dashboard**\n{greeting} warga! Pilih menu:"
+        keyboard = [[InlineKeyboardButton("💰 Lapor Kas", callback_data='lapor'), InlineKeyboardButton("📊 Cek Kas", callback_data='kas')],
+                    [InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')]]
+    else:
+        welcome_text = f"🏠 **Smart RT Dashboard**\n{greeting} semua!"
+        keyboard = [[InlineKeyboardButton("📊 Cek Kas", callback_data='kas'), InlineKeyboardButton("🅿️ Info Parkir", callback_data='parkir')]]
+    
+    await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return ConversationHandler.END
+
+# --- 4. KAS RT LOGIC ---
+async def lapor_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("Masukkan nominal (angka saja):")
+    return INPUT_NOMINAL
+
+async def input_nominal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.text.isdigit():
+        await update.message.reply_text("Mohon angka saja!")
+        return INPUT_NOMINAL
+    context.user_data['nominal'] = int(update.message.text)
+    await update.message.reply_text("Kirim foto bukti transfer:")
+    return UPLOAD_BUKTI
+
+async def upload_bukti(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo_file = update.message.photo[-1].file_id
+    nominal = context.user_data.get('nominal', 0)
+    kb = [[InlineKeyboardButton("✅ Approve", callback_data='app_yes'), InlineKeyboardButton("❌ Reject", callback_data='app_no')]]
+    await context.bot.send_photo(chat_id=ADMIN_ID, photo=photo_file, 
+                                 caption=f"⚠️ Laporan Kas: Rp {nominal:,}\nUser: {update.message.from_user.first_name}",
+                                 reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("Laporan terkirim ke Pak RT.")
+    return ConversationHandler.END
+
+async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global KAS_RT
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'app_yes':
+        nominal = int(query.message.caption.split("Rp ")[1].split("\n")[0].replace(",", ""))
+        KAS_RT += nominal
+        await query.edit_message_caption(caption=f"✅ Approved! Total Kas: Rp {KAS_RT:,}")
+    else: await query.edit_message_caption(caption="❌ Ditolak.")
+
+# --- 5. MAIN EXECUTION ---
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Enable Job Queue
+    job_queue = app.job_queue
+    job_queue.run_repeating(check_ai_status, interval=10, first=5)
+    
+    conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(lapor_start, pattern='lapor')],
+        states={INPUT_NOMINAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_nominal)],
+                UPLOAD_BUKTI: [MessageHandler(filters.PHOTO, upload_bukti)]},
+        fallbacks=[CommandHandler("start", start)]
+    )
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(handle_approval, pattern='app_'))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.edit_message_text(f"🅿️ Status: {PARKIR_STATUS}"), pattern='parkir'))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.edit_message_text(f"📊 Saldo: Rp {KAS_RT:,}"), pattern='kas'))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_handler))
+    
+    app.run_polling()    Gunakan data ini untuk menjawab: 
     - Saldo Kas RT saat ini: Rp {KAS_RT:,}
     - Status Parkir terkini: {PARKIR_STATUS}
     Berikan jawaban yang sopan dan informatif.
