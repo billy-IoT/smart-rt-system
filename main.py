@@ -5,7 +5,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 
 logging.basicConfig(level=logging.INFO)
 
-API_KEY = ('AIzaSyDBwamNE3ClY6c7xYh_ln6um8cppZF-Mtc')
+API_KEY = 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
 
