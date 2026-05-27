@@ -1,39 +1,31 @@
 import os
 import logging
-import requests
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+import google.generativeai as genai
+from telegram.ext import ApplicationBuilder, CommandHandler
 
 logging.basicConfig(level=logging.INFO)
 
-API_KEY = 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={API_KEY}"
+# 1. Konfigurasi
+API_KEY = os.getenv('AI_TOKEN')
+genai.configure(api_key=API_KEY)
 
-async def ai_handler(update, context):
+# 2. Fungsi Detektif
+def print_available_models():
+    print("--- DAFTAR MODEL YANG TERSEDIA UNTUK API KEY INI ---")
     try:
-        payload = {"contents": [{"parts": [{"text": update.message.text}]}]}
-        response = requests.post(URL, json=payload).json()
-        
-        # Log response ke console Railway untuk debugging
-        print(f"DEBUG RESPONSE: {response}")
-
-        # Akses yang lebih aman
-        if 'candidates' in response:
-            answer = response['candidates'][0]['content']['parts'][0]['text']
-            await update.message.reply_text(answer)
-        else:
-            # Jika ada error dari Google, tampilkan error aslinya
-            error_msg = response.get('error', {}).get('message', 'Unknown error')
-            await update.message.reply_text(f"Google API Error: {error_msg}")
-            
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_methods:
+                print(f"Model: {m.name}")
     except Exception as e:
-        await update.message.reply_text(f"Error teknis: {str(e)}")
+        print(f"Gagal akses API: {str(e)}")
 
 async def start(update, context):
-    await update.message.reply_text("Smart RT siap. Silakan tanya!")
+    await update.message.reply_text("Cek log Railway untuk melihat daftar model!")
 
 if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    # Jalankan detektif sebelum bot jalan
+    print_available_models()
+    
+    app = ApplicationBuilder().token(os.getenv('TELEGRAM_TOKEN')).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_handler))
     app.run_polling()
