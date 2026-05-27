@@ -1,6 +1,5 @@
 python-telegram-bot>=20.0
 python-dotenv
-gspread
-oauth2client
-Flask
+google-generativeai
 requests
+Flask
