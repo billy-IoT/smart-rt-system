@@ -56,7 +56,7 @@ def broadcast_message(text):
             pass
 
 # =========================================
-# START
+# HANDLER UTAMA
 # =========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -69,9 +69,6 @@ def start(message):
     markup.row("💰 Lapor Iuran", "📋 Cek Kas")
     bot.reply_to(message, f"Selamat {get_greeting()} \n\nSmart RT siap bantu.", reply_markup=markup)
 
-# =========================================
-# MAIN HANDLER
-# =========================================
 @bot.message_handler(content_types=['text', 'photo'])
 def main_handler(message):
     uid = str(message.from_user.id)
@@ -121,9 +118,9 @@ def main_handler(message):
                     bot.send_message(target_uid, f"⚠️ Ada laporan warga terkait lu:\n\n{text}")
                     bot.reply_to(message, f"✅ Laporan ke @{username} sudah dikirim.")
                 except:
-                    bot.reply_to(message, f"❌ Gagal kirim ke @{username} (Mungkin dia belum /start).")
+                    bot.reply_to(message, f"❌ Gagal kirim ke @{username}.")
             else:
-                bot.reply_to(message, f"❌ User @{username} tidak ditemukan di database.")
+                bot.reply_to(message, f"❌ User @{username} tidak ditemukan.")
 
     # AI Chat
     if is_bot_target(message):
@@ -131,23 +128,24 @@ def main_handler(message):
         
         system_prompt = f"""Lu adalah asisten bot Smart RT.
 Tugas lu: jawab pertanyaan warga/Pak RT dengan tegas, faktual, dan singkat.
-Aturan:
-- JANGAN flirty, JANGAN sok asik, JANGAN basa-basi.
-- Kalau diajak ngobrol santai, balas singkat kayak teman tongkrongan.
-- Kalau user adalah ADMIN_ID (Pak RT), perlakukan sebagai Pak RT.
-- Tidak perlu nanya 'ada lagi yang dibantu?'.
-- Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘).
-- Jika info ilmiah, berikan jawaban singkat + referensi.
-- Jaga jarak profesional (bukan CS).
-
+Aturan: JANGAN flirty, JANGAN sok asik, JANGAN basa-basi. Balas singkat kayak teman tongkrongan. 
+Jika user adalah ADMIN_ID (Pak RT), perlakukan sebagai Pak RT. Tidak perlu nanya 'ada lagi yang dibantu?'.
+Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘). Jika info ilmiah, berikan jawaban singkat + referensi.
 User: {warga_database.get(uid, {}).get('name', 'Warga')} ({role})
 Kas RT: Rp {kas_rt['total']:,}"""
+
+        # Logika Dinamis Token
+        max_tokens = 80
+        if len(text) > 100: max_tokens = 150
+        if "jelaskan" in text.lower(): max_tokens = 200
+        if "coding" in text.lower(): max_tokens = 250
 
         try:
             response = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
-                temperature=0.6,
-                max_tokens=80,
+                temperature=0.7,
+                top_p=0.7,
+                max_tokens=max_tokens,
                 messages=[{"role": "system", "content": system_prompt}, *chat_history[uid]]
             )
             answer = response.choices[0].message.content
@@ -157,7 +155,7 @@ Kas RT: Rp {kas_rt['total']:,}"""
             bot.reply_to(message, f"Error: {str(e)}")
 
 # =========================================
-# FLOW IURAN & CALLBACK (Logika Tetap Sama)
+# FLOW IURAN & CALLBACK
 # =========================================
 def handle_iuran(message):
     uid = str(message.from_user.id)
@@ -210,4 +208,5 @@ def callback_handler(call):
         bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
     del pending_approvals[uid]
 
+print("Bot Smart RT nyala...")
 bot.infinity_polling()
