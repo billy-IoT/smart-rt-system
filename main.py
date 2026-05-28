@@ -32,7 +32,7 @@ pending_approvals = {}
 chat_history = {}
 spam_counter = {}
 muted_users = set()
-
+bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
 # =========================================
 # HELPER
 # =========================================
@@ -193,7 +193,7 @@ def main_handler(message):
     # AI Chat
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
-        bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
+    
         system_prompt = f"""perkenalkan diri lu {bot_name} dengan benar dan sopan tiap awal percakapan!.
 Tugas lu: jawab pertanyaan warga/Pak RT dengan tegas, faktual, dan singkat.
 Aturan:
