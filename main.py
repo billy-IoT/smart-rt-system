@@ -63,7 +63,7 @@ def broadcast_message(text, is_emergency=False):
 
 def get_ai_response(uid, text, role):
     nama = warga_database.get(uid, {}).get("name", "Warga")
-    system_prompt = f"""Lu adalah {bot_name}.
+    system_prompt = f"""kenalkan diri {bot_name}.
 User: Nama: {nama}, Role: {role}
 Aturan: ngobrol natural, santai, singkat, jangan formal, jangan halu, jangan typo, jangan ngulang pertanyaan, jangan kaya CS, jangan kepanjangan, flow manusia chat biasa, emoji seperlunya 😹😭🙏.
 Kalau role user Pak RT: hormati sebagai admin, jangan panggil warga.
@@ -178,24 +178,36 @@ def main_handler(message):
         return
 
     if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
+        # 1. Simpan laporan ke database
         laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
+        
         mentioned = re.findall(r'@(\w+)', text)
+        if not mentioned:
+            bot.reply_to(message, "⚠️ Siapa yang mau dilaporin? Tag orangnya dong 😹")
+            return
+
         for username in mentioned:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
+            
+            # Buat pesan teguran via AI
+            try:
+                system_prompt_lapor = f"Lu adalah {bot_name}. Buat teguran buat warga: {text}. Aturan: tegas, sopan, langsung ke inti. Akhiri dengan: - {bot_name}"
+                res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
+                pesan_ai = res.choices[0].message.content
+            except:
+                pesan_ai = f"⚠️ Teguran terkait: {text}\n\n- {bot_name}"
+            
+            # 2. ACTION: SPIL DI GRUP (Tag orangnya)
+            bot.send_message(message.chat.id, f"📢 TEGURAN TERBUKA UNTUK @{username}\n\n{pesan_ai}")
+            
+            # 3. ACTION: JAPRI KE PELAKU (Jika user terdaftar)
             if target_uid:
                 try:
-                    system_prompt_lapor = f"kenalkan diri dulu {bot_name}. Buat teguran warga: {text}. Aturan: tegas, sopan, singkat, jangan formal, langsung ke inti. Akhiri dengan: - {bot_name}"
-                    res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
-                    pesan_ai = res.choices[0].message.content
+                    bot.send_message(target_uid, f"📢 Teguran RT (Private)\n\n{pesan_ai}")
                 except:
-                    pesan_ai = f"⚠️ Anda dilaporkan terkait:\n{text}\n\n- {bot_name}"
-                
-                try:
-                    bot.send_message(target_uid, f"📢 Teguran RT\n\n{pesan_ai}")
-                    bot.reply_to(message, f"✅ Teguran ke @{username} terkirim.")
-                except:
-                    bot.reply_to(message, f"❌ Gagal kirim ke @{username}.")
-        return
+                    pass # Abaikan jika gagal japri
+        
+        return # Penting agar tidak lanjut ke proses chat AI biasa
 
     if is_bot_target(message):
         chat_history.setdefault(uid, [])
