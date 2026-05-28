@@ -178,7 +178,7 @@ def main_handler(message):
                         model="llama-3.1-8b-instant",
                         messages=[{"role": "system", "content": system_prompt_lapor}, {"role": "user", "content": text}]
                     )
-                    pesan_ai = res.choices[0].message.content
+                    pesan_ai = res.choices[0].message.content {bot_name}
                 except:
                     pesan_ai = f"⚠️ Anda telah dilaporkan oleh warga terkait: {text}"
 
