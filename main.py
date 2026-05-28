@@ -4,6 +4,7 @@ from telebot import types
 from groq import Groq
 import re
 import datetime
+import pytz  # Tambahan untuk akurasi waktu WIB
 
 # --- KONFIGURASI ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -24,7 +25,8 @@ spam_counter = {}
 def get_role(uid): return "Pak RT" if str(uid) == str(ADMIN_ID) else "Warga"
 
 def get_greeting():
-    hour = datetime.datetime.now().hour
+    wib = pytz.timezone('Asia/Jakarta')
+    hour = datetime.datetime.now(wib).hour
     if 5 <= hour < 12: return "Selamat Pagi"
     elif 12 <= hour < 15: return "Selamat Siang"
     elif 15 <= hour < 19: return "Selamat Sore"
@@ -64,7 +66,7 @@ def main_handler(message):
     if role == "Pak RT":
         if text.startswith("/bc "):
             broadcast_message(text.replace("/bc ", ""))
-            bot.reply_to(message, "✅ Pesan disiarkan.")
+            bot.reply_to(message, "✅ Pesan disiarkan ke warga.")
             return
         if text.startswith("/mute "):
             target = text.split(" ")[1].replace("@", "")
