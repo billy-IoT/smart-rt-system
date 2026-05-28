@@ -197,7 +197,7 @@ def callback_handler(call):
         if action == "approve":
             kas_rt["total"] += data["jumlah"]
             bot.send_message(uid, f"✅ Iuran diterima. Kas: Rp {kas_rt['total']:,}")
-            bot.edit_message_caption(caption="✅ Iuran disetujui", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            bot.edit_message_caption(caption="✅ Iuran telah disetujui, terimakasih {state_data['nama']} karena telah melakukan pembayaran {state_data[kategori]:,} sebesar {state_data['jumlah']:,}", chat_id=call.message.chat.id, message_id=call.message.message_id)
         else:
             bot.send_message(uid, "❌ Iuran ditolak.")
             bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
