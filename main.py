@@ -31,6 +31,12 @@ def get_greeting():
     else: return "Selamat Malam"
 
 def is_bot_target(message):
+    uid = str(message.from_user.id)
+    # Pak RT selalu bisa interaksi tanpa syarat
+    if get_role(uid) == "Pak RT": return True
+    # Jika japri, selalu respon
+    if message.chat.type == 'private': return True
+    # Jika di grup, wajib reply bot atau mention bot
     if message.reply_to_message and message.reply_to_message.from_user.is_bot: return True
     if message.text and f"@{bot.get_me().username}" in message.text: return True
     return False
@@ -42,6 +48,7 @@ def main_handler(message):
     text = message.text or (message.caption if message.caption else "")
     role = get_role(uid)
     
+    # 1. Anti Spam & Mute
     if uid in muted_users: return
     spam_counter[uid] = spam_counter.get(uid, 0) + 1
     if spam_counter[uid] > 10:
@@ -50,27 +57,16 @@ def main_handler(message):
         return
 
     if uid not in warga_database:
-        warga_database[uid] = {'name': message.from_user.first_name}
+        warga_database[uid] = {'name': message.from_user.first_name, 'username': message.from_user.username}
 
+    # 2. Fitur Admin (Mute)
     if role == "Pak RT" and text.startswith("/mute "):
-        target_id = text.split(" ")
-        muted_users.add(target_id)
-        bot.reply_to(message, f"✅ User {target_id} dimute.")
+        target = text.split(" ")[1].replace("@", "")
+        muted_users.add(target)
+        bot.reply_to(message, f"✅ User {target} dimute.")
         return
 
-    if text == "💰 Lapor Iuran":
-        user_states[uid] = {'state': 'WAITING_NAME'}
-        bot.reply_to(message, "Masukkan nama lengkap Anda:")
-        return
-    elif text == "📋 Cek Kas & Info":
-        bot.reply_to(message, f"{get_greeting()}! Kas RT saat ini: Rp {kas_rt['total']:,}")
-        return
-
-    if uid in user_states:
-        handle_lapor_steps(message)
-        return
-
-    # Cek dulu fiturnya (di luar is_bot_target agar tetap jalan meski nggak di-tag)
+    # 3. Logika Laporan (Tanpa harus tag bot)
     if "lapor" in text.lower() or "parkir" in text.lower():
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
@@ -80,27 +76,39 @@ def main_handler(message):
                     bot.send_message(target_uid, f"⚠️ Notifikasi Laporan: Anda dilaporkan oleh {warga_database[uid]['name']} terkait: '{text}'. Mohon segera diselesaikan.")
                     bot.reply_to(message, f"✅ Laporan terhadap @{username} telah diteruskan secara privat.")
                 except:
-                    bot.reply_to(message, f"❌ Gagal kirim japri ke @{username}. Pastikan dia sudah tekan /start.")
+                    bot.reply_to(message, f"❌ Gagal kirim japri ke @{username}.")
 
-    # Sekarang baru cek AI Processor
+    # 4. State Machine (Iuran)
+    if uid in user_states:
+        handle_lapor_steps(message)
+        return
+    
+    if text == "💰 Lapor Iuran":
+        user_states[uid] = {'state': 'WAITING_NAME'}
+        bot.reply_to(message, "Masukkan nama lengkap Anda:")
+        return
+    elif text == "📋 Cek Kas & Info":
+        bot.reply_to(message, f"{get_greeting()}! Kas RT saat ini: Rp {kas_rt['total']:,}")
+        return
+
+    # 5. AI Processor (Hanya jika memenuhi syarat is_bot_target)
     if is_bot_target(message):
         if uid not in chat_history: chat_history[uid] = []
         chat_history[uid].append({"role": "user", "content": text})
         
-        # Pake system_prompt yang lengkap (cuma satu kali)
         system_prompt = f"""
-        Anda adalah asisten cerdas Smart RT. Berikut adalah pedoman perilaku Anda:
-        1. Anda WAJIB mencari informasi dari internet/sumber terpercaya untuk pertanyaan umum, edukasi, atau berita terbaru.
-        2. Gunakan penalaran Anda untuk memberikan jawaban berdasarkan data terkini jika informasi tidak ada di memori.
-        3. SELALU cantumkan sumber atau referensi link jika jawaban diambil dari luar.
-        4. Kas RT saat ini: Rp {kas_rt['total']:,}. Harap gunakan data ini sebagai rujukan utama.
-        5. Gunakan bahasa gaul yang sopan, solutif, dan komunikatif agar warga merasa nyaman.
-        6. Untuk urusan internal RT, Anda harus patuh pada aturan lingkungan setempat.
-        7. Jika tidak tahu jawaban atau pertanyaan di luar wewenang Anda, arahkan dengan sopan ke Pak RT.
-        8. Jaga privasi data warga dan tidak boleh membocorkan informasi sensitif antar warga.
-        9. Bersikap netral, adil, dan tidak memihak dalam memediasi laporan atau keluhan warga.
-
-        Identitas lawan bicara saat ini: {role} bernama {warga_database[uid]['name']}.
+        Anda adalah asisten cerdas Smart RT. Pedoman perilaku:
+        1. WAJIB mencari info internet untuk pertanyaan umum/berita dan sertakan sumber.
+        2. Jika jawaban tidak ada, gunakan penalaran berdasarkan data terkini.
+        3. SELALU cantumkan referensi/link sumber jika mengambil dari internet.
+        4. Kas RT saat ini: Rp {kas_rt['total']:,}.
+        5. Bahasa gaul, sopan, dan solutif.
+        6. Patuhi aturan lokal RT.
+        7. Arahkan pertanyaan di luar wewenang ke Pak RT.
+        8. Jaga privasi dan jangan bocorkan info sensitif.
+        9. Bersikap netral dan adil dalam memediasi laporan.
+        
+        Identitas lawan bicara: {role} bernama {warga_database[uid]['name']}.
         """
         
         res = client.chat.completions.create(
@@ -108,8 +116,8 @@ def main_handler(message):
             model="llama-3.3-70b-versatile"
         )
         bot.reply_to(message, res.choices[0].message.content)
-        
-# --- HANDLER IURAN DENGAN VALIDASI ---
+
+# --- HANDLER IURAN ---
 def handle_lapor_steps(message):
     uid = str(message.from_user.id)
     state = user_states[uid]['state']
@@ -117,17 +125,14 @@ def handle_lapor_steps(message):
     if state == "WAITING_NAME":
         warga_database[uid]['name'] = message.text
         user_states[uid] = {'state': 'WAITING_AMOUNT', 'nama': message.text}
-        bot.reply_to(message, f"Data {message.text} tersimpan. Berapa nominal iurannya (angka saja)?")
-        
+        bot.reply_to(message, "Berapa nominal iurannya (angka saja)?")
     elif state == "WAITING_AMOUNT":
-        # Data Cleaning: buang Rp, titik, koma
-        raw_nominal = message.text.replace("Rp", "").replace(".", "").replace(",", "").strip()
-        if raw_nominal.isdigit():
-            user_states[uid] = {'state': 'WAITING_PHOTO', 'nama': user_states[uid]['nama'], 'jumlah': int(raw_nominal)}
+        raw = message.text.replace("Rp", "").replace(".", "").replace(",", "").strip()
+        if raw.isdigit():
+            user_states[uid] = {'state': 'WAITING_PHOTO', 'nama': user_states[uid]['nama'], 'jumlah': int(raw)}
             bot.reply_to(message, "Kirim foto bukti iuran:")
         else:
-            bot.reply_to(message, "⚠️ Nominal salah! Masukkan angka saja (contoh: 50000).")
-            
+            bot.reply_to(message, "⚠️ Masukkan nominal dalam angka (contoh: 50000).")
     elif state == "WAITING_PHOTO" and message.photo:
         pending_approvals[uid] = {'nama': user_states[uid]['nama'], 'jumlah': user_states[uid]['jumlah']}
         markup = types.InlineKeyboardMarkup()
