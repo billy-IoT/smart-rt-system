@@ -20,8 +20,12 @@ client = Groq(api_key=GROQ_API_KEY)
 # =========================================
 # DATABASE
 # =========================================
-# Ubah ini
-kas_rt = {"total": 0, "jumlah": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
+kas_rt = {
+    "total": 0,
+    "Kebersihan": 0,
+    "Keamanan": 0,
+    "Lain-lain": 0
+}
 warga_database = {}
 user_states = {}
 pending_approvals = {}
@@ -105,14 +109,7 @@ def main_handler(message):
         bot.reply_to(message, "Masukin nama lengkap lu:")
         return
     elif text == "📋 Cek Kas":
-        detail_kas = (f"💰 Rincian Kas RT:\n"
-                      f"--------------------------\n"
-                      f"Kebersihan: Rp {kas_rt['Kebersihan']:,}{kas_rt['jumlah']:,} \n"
-                      f"Keamanan:   Rp {kas_rt['Keamanan']:,}{kas_rt['jumlah']:,}\n"
-                      f"Lain-lain:  Rp {kas_rt['Lain-lain']:,}{kas_rt['jumlah']:,}\n"
-                      f"--------------------------\n"
-                      f"TOTAL:      Rp {kas_rt['total']:,}")
-        bot.reply_to(message, detail_kas)
+        bot.reply_to(message, f"💰 Kas RT sekarang:\nRp {kas_rt['total']:,}")
         return
 
     # Lapor Warga Bermasalah
@@ -135,17 +132,17 @@ def main_handler(message):
         system_prompt = f"""Lu adalah asisten bot Smart RT.
 Tugas lu: jawab pertanyaan warga/Pak RT dengan tegas, faktual, dan singkat.
 Aturan:
-- JANGAN flirty, JANGAN sok asik, JANGAN basa-basi sopan bisa bedain mana pak rt{ADMIN_ID}, mana warga.
+- JANGAN flirty, JANGAN sok asik, JANGAN basa-basi.
 - Kalau diajak ngobrol santai, balas singkat kayak teman tongkrongan.
 - Kalau user adalah ADMIN_ID (Pak RT), perlakukan sebagai Pak RT.
 - Tidak perlu nanya 'ada lagi yang dibantu?'.
 - Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘).
-- Jika info ilmiah, berikan jawaban faktual + link referensi.
+- Jika info ilmiah, berikan jawaban singkat + referensi.
 - Jaga jarak profesional (bukan CS).
 
 User: {warga_database.get(uid, {}).get('name', 'Warga')} ({role})
 Kas RT: Rp {kas_rt['total']:,}"""
-        max_tokens = 300 if "coding" in text.lower() else (200 if "jelaskan" in text.lower() else (150 if len(text) > 100 else 80))
+        max_tokens = 250 if "coding" in text.lower() else (200 if "jelaskan" in text.lower() else (150 if len(text) > 100 else 80))
         try:
             res = client.chat.completions.create(model="llama-3.1-8b-instant", temperature=0.7, max_tokens=max_tokens, messages=[{"role": "system", "content": system_prompt}, *chat_history[uid]])
             ans = res.choices[0].message.content
@@ -199,38 +196,28 @@ def handle_iuran(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     parts = call.data.split("_")
-    if len(parts) < 2: return
     action, uid = parts[0], parts[1]
     
     if uid in pending_approvals:
         data = pending_approvals[uid]
-        
-        # Mengambil data dari dictionary agar bisa digunakan dalam f-string
-        nama_warga = data.get("nama", "Warga")
-        kategori_iuran = data.get("kategori", "Lain-lain")
-        jumlah_iuran = data.get("jumlah", 0)
+        nama = data.get("nama")
+        kategori = data.get("kategori")
+        jumlah = data.get("jumlah")
         
         if action == "approve":
-            kas_rt["total"] += jumlah_iuran
+            # Update saldo spesifik kategori & total
+            kas_rt[kategori] += jumlah
+            kas_rt["total"] += jumlah
             
-            # Pesan yang dikirim ke warga
-            bot.send_message(uid, f"✅ Iuran telah disetujui, terimakasih {nama_warga} karena telah melakukan pembayaran {kategori_iuran} sebesar Rp {jumlah_iuran:,}")
-            
-            # Update caption di chat Pak RT
+            bot.send_message(uid, f"✅ Iuran disetujui, terimakasih {nama} atas pembayaran {kategori} sebesar Rp {jumlah:,}")
             bot.edit_message_caption(
-                caption=f"✅ Iuran disetujui.\nTotal Kas RT: Rp {kas_rt['total']:,}", 
-                chat_id=call.message.chat.id, 
-                message_id=call.message.message_id
+                caption=f"✅ Iuran disetujui.\nKategori: {kategori}\nJumlah: Rp {jumlah:,}\n\nTotal Kas RT: Rp {kas_rt['total']:,}", 
+                chat_id=call.message.chat.id, message_id=call.message.message_id
             )
         else:
             bot.send_message(uid, "❌ Iuran ditolak.")
-            bot.edit_message_caption(
-                caption="❌ Iuran ditolak", 
-                chat_id=call.message.chat.id, 
-                message_id=call.message.message_id
-            )
+            bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
         
         del pending_approvals[uid]
-
 print("Bot Smart RT nyala...")
 bot.infinity_polling()
