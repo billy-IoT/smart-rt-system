@@ -171,7 +171,8 @@ def main_handler(message):
                 # 1. Minta AI buatkan pesan teguran berdasarkan isi laporan (text)
                 system_prompt_lapor = f"""Lu adalah {bot_name} asisten RT yang tegas. 
                 Buatlah pesan teguran untuk warga yang dilaporkan karena: '{text}'.
-                Aturan: Tegas, sopan tapi tidak basa-basi, jangan flirty. Langsung ke inti masalah."""
+                Aturan: Tegas, sopan tapi tidak basa-basi, jangan flirty. Langsung ke inti masalah.
+                {pesan_ai} harus diakhiri dengan signature lu {bot_name}!"""
                 
                 try:
                     res = client.chat.completions.create(
