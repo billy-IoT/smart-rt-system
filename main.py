@@ -26,7 +26,7 @@ user_states = {}
 pending_approvals = {}
 chat_history = {}
 spam_counter = {}
-
+laporan_warga = []
 # =========================================
 # HELPER
 # =========================================
@@ -114,6 +114,13 @@ def main_handler(message):
         handle_iuran(message)
         return
 
+    if role == "Pak RT" and "laporan" in text.lower():
+        if not laporan_warga:
+            bot.reply_to(message, "Belum ada laporan dari warga.")
+        else:
+            bot.reply_to(message, "📋 Daftar laporan masuk:\n" + "\n".join(laporan_warga))
+        return
+
     if role == "Pak RT":
         if text.startswith("/bc "):
             broadcast_message(text.replace("/bc ", ""))
@@ -171,12 +178,13 @@ def main_handler(message):
         return
 
     if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
+        laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
                 try:
-                    system_prompt_lapor = f"Lu adalah {bot_name}. Buat teguran warga: {text}. Aturan: tegas, sopan, singkat, jangan formal, langsung ke inti. Akhiri dengan: - {bot_name}"
+                    system_prompt_lapor = f"kenalkan diri dulu {bot_name}. Buat teguran warga: {text}. Aturan: tegas, sopan, singkat, jangan formal, langsung ke inti. Akhiri dengan: - {bot_name}"
                     res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
                     pesan_ai = res.choices[0].message.content
                 except:
