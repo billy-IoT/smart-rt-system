@@ -178,34 +178,31 @@ def main_handler(message):
         return
 
     if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
-        # 1. Simpan ke database
+        # 1. Simpan laporan ke database
         laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
         
-        # Buat isi teguran AI
+        # 2. Buat pesan teguran AI
         try:
-            system_prompt_lapor = f"Lu adalah {bot_name}. Buat teguran buat warga: {text}. Aturan: tegas, sopan, langsung ke inti. Akhiri dengan: - {bot_name}"
+            system_prompt_lapor = f"kenalkan diri {bot_name}. Buat teguran buat warga: {text}. Aturan: tegas, sopan, langsung ke inti. Akhiri dengan: - {bot_name}"
             res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
             pesan_ai = res.choices[0].message.content
         except:
             pesan_ai = f"⚠️ Teguran terkait: {text}\n\n- {bot_name}"
 
-        # 2. ACTION: SPIL DI GRUP (Ini harus jalan duluan)
-        # Kita ambil username dari teks kalau ada
+        # 3. KIRIM DI GRUP (Pasti jalan karena di luar looping target)
+        bot.send_message(message.chat.id, f"📢 TEGURAN TERBUKA\n\n{pesan_ai}")
+        
+        # 4. KIRIM JAPRI (Hanya jika ketemu usernya)
         mentions = re.findall(r'@(\w+)', text)
-        tag_target = f"untuk @{mentions[0]}" if mentions else "untuk warga"
-        
-        bot.send_message(message.chat.id, f"📢 TEGURAN TERBUKA {tag_target}\n\n{pesan_ai}")
-        
-        # 3. ACTION: JAPRI KE PELAKU (Jika user terdaftar)
         for username in mentions:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
                 try:
-                    bot.send_message(target_uid, f"📢 Teguran RT (Private)\n\n{pesan_ai}")
+                    bot.send_message(target_uid, f"📢 Teguran RT (Japri)\n\n{pesan_ai}")
                 except:
                     pass 
         
-        return
+        return # Agar tidak diproses AI chat
 
     if is_bot_target(message):
         chat_history.setdefault(uid, [])
