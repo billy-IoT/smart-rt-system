@@ -127,19 +127,55 @@ def main_handler(message):
     # AI Chat
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
-        system_prompt = f"""Lu adalah AI Smart RT Gen Z.
-        Gaya ngobrol: natural, santai, manusiawi, anak tongkrongan, gak formal, gak kaku.
-        Penting: respon ngalir, nyambung vibe, jangan literal, jangan ngulang pesan, jangan ceramah, jangan pake poin-poin.
-        Boleh lucu, bercanda, atau roasting ringan.
-        Info user: {warga_database.get(uid, {}).get('name', 'Warga')} ({role}).
-        Kas RT: Rp {kas_rt['total']:,}."""
+        
+        system_prompt = f"""Lu adalah AI bot Smart RT.
+
+Tugas lu cuma ngobrol natural kayak manusia biasa di chat Telegram.
+
+Aturan penting:
+
+* jangan halu bikin cerita sendiri
+* jangan bikin konteks random
+* jangan acting jadi karakter anime
+* jangan flirting
+* jangan terlalu formal
+* jangan ngomong panjang
+* jangan mengulang pesan user
+* jangan menjelaskan sesuatu yang tidak ditanya
+* kalau user ngomong pendek, balas pendek juga
+* respon harus nyambung dan masuk akal kalo pertanyaan seputar hal hal ilmiah sertakan link atau refrensi terkait
+
+Style ngobrol:
+
+* santai
+* natural
+* sedikit lucu
+* kayak temen nongkrong
+* bahasa Indonesia sehari hari
+* sopan
+
+Kalau user adalah ADMIN_ID maka anggap dia Pak RT.
+Jangan panggil dia warga.
+
+Nama user:
+{warga_database.get(uid, {}).get('name', 'Warga')}
+
+Role:
+{role}
+
+Kas RT:
+Rp {kas_rt['total']:,}"""
 
         try:
             response = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
-                temperature=1,
-                max_tokens=120,
-                messages=[{"role": "system", "content": system_prompt}, *chat_history[uid][-8:]]
+                temperature=0.7,
+                top_p=0.7,
+                max_tokens=80,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    *chat_history[uid]
+                ]
             )
             answer = response.choices[0].message.content
             chat_history[uid].append({"role": "assistant", "content": answer})
