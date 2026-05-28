@@ -20,7 +20,8 @@ client = Groq(api_key=GROQ_API_KEY)
 # =========================================
 # DATABASE
 # =========================================
-kas_rt = {"total": 0}
+# Ubah ini
+kas_rt = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
 warga_database = {}
 user_states = {}
 pending_approvals = {}
@@ -104,7 +105,14 @@ def main_handler(message):
         bot.reply_to(message, "Masukin nama lengkap lu:")
         return
     elif text == "📋 Cek Kas":
-        bot.reply_to(message, f"💰 Kas RT sekarang:\nRp {kas_rt['total']:,}")
+        detail_kas = (f"💰 Rincian Kas RT:\n"
+                      f"--------------------------\n"
+                      f"Kebersihan: Rp {kas_rt['Kebersihan']:,}\n"
+                      f"Keamanan:   Rp {kas_rt['Keamanan']:,}\n"
+                      f"Lain-lain:  Rp {kas_rt['Lain-lain']:,}\n"
+                      f"--------------------------\n"
+                      f"TOTAL:      Rp {kas_rt['total']:,}")
+        bot.reply_to(message, detail_kas)
         return
 
     # Lapor Warga Bermasalah
