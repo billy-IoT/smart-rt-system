@@ -62,6 +62,12 @@ def main_handler(message):
     text = message.text or (message.caption if message.caption else "")
     role = get_role(uid)
     
+    # Prioritas: State Machine Iuran
+    if uid in user_states:
+        handle_lapor_steps(message)
+        return
+
+    # 1. Fitur Admin
     if role == "Pak RT":
         if text.startswith("/bc "):
             broadcast_message(text.replace("/bc ", ""))
@@ -73,6 +79,7 @@ def main_handler(message):
             bot.reply_to(message, f"✅ User {target} dimute.")
             return
 
+    # 2. Anti Spam
     if uid in muted_users: return
     spam_counter[uid] = spam_counter.get(uid, 0) + 1
     if spam_counter[uid] > 10:
@@ -80,6 +87,7 @@ def main_handler(message):
         bot.reply_to(message, "🚫 Anda di-mute karena spam.")
         return
 
+    # 3. Logika Laporan (Private Warning)
     if "lapor" in text.lower() or "parkir" in text.lower():
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
@@ -90,10 +98,7 @@ def main_handler(message):
                     bot.reply_to(message, f"✅ Laporan terhadap @{username} telah diteruskan secara privat.")
                 except: bot.reply_to(message, f"❌ Gagal kirim japri ke @{username}.")
 
-    if uid in user_states:
-        handle_lapor_steps(message)
-        return
-    
+    # 4. Menu Utama
     if text == "💰 Lapor Iuran":
         user_states[uid] = {'state': 'WAITING_NAME'}
         bot.reply_to(message, "Masukkan nama lengkap Anda:")
@@ -102,6 +107,7 @@ def main_handler(message):
         bot.reply_to(message, f"{get_greeting()}! Kas RT saat ini: Rp {kas_rt['total']:,}")
         return
 
+    # 5. AI Processor
     if is_bot_target(message):
         if uid not in chat_history: chat_history[uid] = []
         chat_history[uid].append({"role": "user", "content": text})
@@ -126,29 +132,32 @@ def handle_lapor_steps(message):
         if message.text in cat_map:
             user_states[uid].update({'state': 'WAITING_DESC' if message.text == "3" else 'WAITING_AMOUNT', 'kategori': cat_map[message.text]})
             if message.text == "3": bot.reply_to(message, "Masukkan keterangan iuran:")
-            else: bot.reply_to(message, "Masukkan nominal iuran:")
+            else: bot.reply_to(message, "Masukkan nominal iuran (minimal 10.000):")
         else: bot.reply_to(message, "Pilih 1, 2, atau 3.")
 
     elif state == "WAITING_DESC":
         user_states[uid].update({'state': 'WAITING_AMOUNT', 'keterangan': message.text})
-        bot.reply_to(message, "Masukkan nominal iuran:")
+        bot.reply_to(message, "Masukkan nominal iuran (minimal 10.000):")
 
     elif state == "WAITING_AMOUNT":
         raw = re.sub(r'\D', '', message.text)
         if raw.isdigit() and int(raw) >= 10000:
             user_states[uid].update({'state': 'WAITING_PHOTO', 'jumlah': int(raw)})
             bot.reply_to(message, "Kirim foto bukti iuran:")
-        else: bot.reply_to(message, "⚠️ Nominal minimal Rp 10.000.")
+        else: bot.reply_to(message, "⚠️ Nominal minimal Rp 10.000, masukkan angka saja.")
 
-    elif state == "WAITING_PHOTO" and message.photo:
-        data = user_states[uid]
-        pending_approvals[uid] = data
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"), types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
-        ket = f"\nKeterangan: {data.get('keterangan')}" if 'keterangan' in data else ""
-        bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"Iuran {data['kategori']}\nDari: {data['nama']}\nNominal: Rp {data['jumlah']:,}{ket}", reply_markup=markup)
-        bot.reply_to(message, "Laporan terkirim ke Pak RT!")
-        del user_states[uid]
+    elif state == "WAITING_PHOTO":
+        if message.photo:
+            data = user_states[uid]
+            pending_approvals[uid] = data
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"), types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
+            ket = f"\nKeterangan: {data.get('keterangan')}" if 'keterangan' in data else ""
+            bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"Iuran {data['kategori']}\nDari: {data['nama']}\nNominal: Rp {data['jumlah']:,}{ket}", reply_markup=markup)
+            bot.reply_to(message, "Laporan terkirim ke Pak RT!")
+            del user_states[uid]
+        else:
+            bot.reply_to(message, "⚠️ Harap kirimkan foto bukti iuran.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
