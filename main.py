@@ -184,7 +184,7 @@ def main_handler(message):
         
         # Kirim ke Grup Pusat Laporan
         if CHAT_ID_GRUP:
-            try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\nPelapor: {message.from_user.first_name}\nIsi: {text}")
+            try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\nPelapor: {message.from_user.first_name}\nIsi: {pesan_ai}")
             except: pass
 
         # ... (di dalam if any(k in text.lower()...))
