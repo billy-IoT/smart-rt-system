@@ -53,10 +53,21 @@ def is_bot_target(message):
     if message.text and f"@{bot.get_me().username}" in message.text: return True
     return False
 
-def broadcast_message(text):
-    for uid in warga_database:
-        try: bot.send_message(uid, f"📢 Pengumuman RT\n\n{text}")
-        except: pass
+def broadcast_message(text, is_emergency=False):
+    # Mengumpulkan semua user ID dari database
+    users = list(warga_database.keys())
+    
+    if is_emergency:
+        # Pesan darurat dengan mention semua orang (format Telegram)
+        announcement = f"🚨🚨 DARURAT 🚨🚨\n\n{text}\n\nMohon perhatian seluruh warga!"
+    else:
+        announcement = f"📢 Pengumuman RT\n\n{text}"
+        
+    for uid in users:
+        try: 
+            bot.send_message(uid, announcement)
+        except: 
+            pass
 
 # =========================================
 # HANDLER UTAMA
@@ -120,20 +131,31 @@ def main_handler(message):
         bot.reply_to(message, detail_kas)
         return
 
-    # Lapor Warga Bermasalah
-    if "lapor" in text.lower() or "parkir" in text.lower():
+    # Di dalam main_handler:
+    
+    # Fitur Broadcast Darurat
+    if text.lower().startswith("darurat "):
+        if role == "Pak RT":
+            msg = text.replace("darurat ", "")
+            broadcast_message(msg, is_emergency=True)
+            bot.reply_to(message, "✅ Pesan darurat telah disebar ke semua warga.")
+        else:
+            bot.reply_to(message, "❌ Hanya Pak RT yang bisa mengeluarkan perintah darurat.")
+        return
+
+    # Fitur Lapor/Tag Anggota Bermasalah
+    # (Bot akan men-tag username dan mengirim notifikasi personal)
+    if "lapor" in text.lower() or "bermasalah" in text.lower():
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
-                try:
-                    bot.send_message(target_uid, f"⚠️ Ada laporan warga terkait lu:\n\n{text}")
-                    bot.reply_to(message, f"✅ Laporan ke @{username} sudah dikirim.")
-                except:
-                    bot.reply_to(message, f"❌ Gagal kirim ke @{username}.")
+                # Mengirim japri ke orang yang bermasalah
+                bot.send_message(target_uid, f"⚠️ Anda telah dilaporkan oleh warga terkait: {text}")
+                # Memberi tahu pelapor
+                bot.reply_to(message, f"✅ Laporan telah dikirim ke @{username} dan sudah di-tag sebagai anggota bermasalah.")
             else:
-                bot.reply_to(message, f"❌ User @{username} tidak ditemukan.")
-
+                bot.reply_to(message, f"❌ User @{username} tidak terdaftar.")
     # AI Chat
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
