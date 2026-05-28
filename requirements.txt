@@ -1,2 +1,4 @@
 pyTelegramBotAPI
 groq
+pytz
+requests
