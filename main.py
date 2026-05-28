@@ -21,7 +21,7 @@ client = Groq(api_key=GROQ_API_KEY)
 # DATABASE
 # =========================================
 # Ubah ini
-kas_rt = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
+kas_rt = {"total": 0, "jumlah": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
 warga_database = {}
 user_states = {}
 pending_approvals = {}
@@ -107,9 +107,9 @@ def main_handler(message):
     elif text == "📋 Cek Kas":
         detail_kas = (f"💰 Rincian Kas RT:\n"
                       f"--------------------------\n"
-                      f"Kebersihan: Rp {kas_rt['Kebersihan']:,}\n"
-                      f"Keamanan:   Rp {kas_rt['Keamanan']:,}\n"
-                      f"Lain-lain:  Rp {kas_rt['Lain-lain']:,}\n"
+                      f"Kebersihan: Rp {kas_rt['Kebersihan']:,}{kas_rt['jumlah']:,} \n"
+                      f"Keamanan:   Rp {kas_rt['Keamanan']:,}{kas_rt['jumlah']:,}\n"
+                      f"Lain-lain:  Rp {kas_rt['Lain-lain']:,}{kas_rt['jumlah']:,}\n"
                       f"--------------------------\n"
                       f"TOTAL:      Rp {kas_rt['total']:,}")
         bot.reply_to(message, detail_kas)
