@@ -169,7 +169,7 @@ def main_handler(message):
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
                 # 1. Minta AI buatkan pesan teguran berdasarkan isi laporan (text)
-                system_prompt_lapor = f"""Lu adalah asisten RT yang tegas. 
+                system_prompt_lapor = f"""Lu adalah {bot_name} asisten RT yang tegas. 
                 Buatlah pesan teguran untuk warga yang dilaporkan karena: '{text}'.
                 Aturan: Tegas, sopan tapi tidak basa-basi, jangan flirty. Langsung ke inti masalah."""
                 
@@ -178,7 +178,7 @@ def main_handler(message):
                         model="llama-3.1-8b-instant",
                         messages=[{"role": "system", "content": system_prompt_lapor}, {"role": "user", "content": text}]
                     )
-                    pesan_ai = res.choices[0].message.content {bot_name}
+                    pesan_ai = res.choices[0].message.content
                 except:
                     pesan_ai = f"⚠️ Anda telah dilaporkan oleh warga terkait: {text}"
 
