@@ -182,10 +182,11 @@ def main_handler(message):
         return
 
     if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
-        # 1. Simpan ke database
+    if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
+        # 1. Simpan laporan
         laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
         
-        # 2. Buat teguran AI
+        # 2. Generate Teguran AI
         try:
             system_prompt_lapor = f"Lu adalah {bot_name}. Buat teguran buat warga: {text}. Aturan: tegas, sopan, langsung ke inti. Akhiri dengan: - {bot_name}"
             res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
@@ -193,30 +194,28 @@ def main_handler(message):
         except:
             pesan_ai = f"⚠️ Teguran terkait: {text}\n\n- {bot_name}"
 
-        # 3. LOGIKA FORWARD KE GRUP & JAPRI
-        # Ganti CHAT_ID_GRUP dengan ID grup Anda (angka negatif, misal -100xxxxxxx)
-        CHAT_ID_GRUP = -100123456789 
-        
-        if message.chat.type == "private":
-            # Jika laporan dari Japri: Info ke pelapor & Forward ke grup
-            bot.reply_to(message, "✅ Laporan diterima, akan segera diproses di grup.")
-            bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN MASUK VIA JAPRI]\n\n{text}")
-            # Bot tetap kirim teguran ke pelaku (jika ditemukan)
-        else:
-            # Jika laporan dari Grup: Reply langsung di grup
-            bot.reply_to(message, f"📢 TEGURAN TERBUKA\n\n{pesan_ai}")
+        # 3. KIRIM KE GRUP (Wajib)
+        # Kita pakai try agar kalau gagal, bot tidak berhenti
+        try:
+            if message.chat.type == "private":
+                bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN VIA JAPRI]\n\n{pesan_ai}")
+                bot.reply_to(message, "✅ Laporan sudah diteruskan ke grup.")
+            else:
+                bot.reply_to(message, f"📢 TEGURAN TERBUKA\n\n{pesan_ai}")
+        except Exception as e:
+            print(f"Error kirim grup: {e}")
 
-        # 4. KIRIM JAPRI KE PELAKU (Berlaku untuk semua)
+        # 4. KIRIM JAPRI KE PELAKU (Wajib)
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
                 try:
                     bot.send_message(target_uid, f"📢 Teguran RT (Japri)\n\n{pesan_ai}")
-                except:
-                    pass 
+                except Exception as e:
+                    print(f"Error kirim japri: {e}")
         
-        return
+        return # BERHENTI di sini
     if is_bot_target(message):
         chat_history.setdefault(uid, [])
         chat_history[uid].append({"role": "user", "content": text})
