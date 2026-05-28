@@ -18,7 +18,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 client = Groq(api_key=GROQ_API_KEY)
 
 # =========================================
-# DATABASE SEMENTARA
+# DATABASE
 # =========================================
 kas_rt = {"total": 0}
 warga_database = {}
@@ -50,10 +50,8 @@ def is_bot_target(message):
 
 def broadcast_message(text):
     for uid in warga_database:
-        try:
-            bot.send_message(uid, f"📢 Pengumuman RT\n\n{text}")
-        except:
-            pass
+        try: bot.send_message(uid, f"📢 Pengumuman RT\n\n{text}")
+        except: pass
 
 # =========================================
 # HANDLER UTAMA
@@ -75,6 +73,7 @@ def main_handler(message):
     role = get_role(uid)
     text = message.text or message.caption or ""
 
+    # Redirect ke flow iuran jika user ada di state
     if uid in user_states:
         handle_iuran(message)
         return
@@ -108,7 +107,7 @@ def main_handler(message):
         bot.reply_to(message, f"💰 Kas RT sekarang:\nRp {kas_rt['total']:,}")
         return
 
-    # Lapor
+    # Lapor Warga Bermasalah
     if "lapor" in text.lower() or "parkir" in text.lower():
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
@@ -125,101 +124,84 @@ def main_handler(message):
     # AI Chat
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
-        
-        system_prompt = f"""Lu adalah bot Smart RT yang fungsinya asisten warga.
+        system_prompt = f"""Lu adalah asisten bot Smart RT.
+Tugas lu: jawab pertanyaan warga/Pak RT dengan tegas, faktual, dan singkat.
+Aturan:
+- JANGAN flirty, JANGAN sok asik, JANGAN basa-basi sopan bisa bedain mana pak rt{ADMIN_ID}, mana warga.
+- Kalau diajak ngobrol santai, balas singkat kayak teman tongkrongan.
+- Kalau user adalah ADMIN_ID (Pak RT), perlakukan sebagai Pak RT.
+- Tidak perlu nanya 'ada lagi yang dibantu?'.
+- Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘).
+- Jika info ilmiah, berikan jawaban faktual + link referensi.
+- Jaga jarak profesional (bukan CS).
 
-Aturan utama:
-- Jawab seperlunya, jangan sok asik, jangan flirting, jangan bertele-tele.
-- Kalau ditanya, jawab faktual. Kalau diajak ngobrol santai, balas seperlunya kayak temen tongkrongan.
-- Kalau user adalah ADMIN_ID (Pak RT), perlakukan dia sebagai Pak RT, jangan dipanggil warga.
-- Jangan pernah basa-basi nanya "ada lagi yang bisa dibantu?".
-- Kalau user ngomong pendek, balas pendek.
-- Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘) sesuaikan dengan sentiment analysis condition. 
-- Kalo ada pertanyaan ilmiah/fakta, kasih jawaban yang sesuai di internet atau database internet terkini + link/referensi.
-
-Gaya bahasa:
-- Santai, akrab, tapi jaga jarak (bukan gaya customer service).
-- Tidak boleh kaku/formal banget.
-
-Info user:
-Nama: {warga_database.get(uid, {}).get('name', 'Warga')}
-Role: {role}
-Kas RT: Rp {kas_rt['total']:,}
-"""
-
-        # Logika Dinamis Token
-        max_tokens = 80
-        if len(text) > 100: max_tokens = 150
-        if "jelaskan" in text.lower(): max_tokens = 200
-        if "coding" in text.lower(): max_tokens = 250
-
+User: {warga_database.get(uid, {}).get('name', 'Warga')} ({role})
+Kas RT: Rp {kas_rt['total']:,}"""
+        max_tokens = 300 if "coding" in text.lower() else (200 if "jelaskan" in text.lower() else (150 if len(text) > 100 else 80))
         try:
-            response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                temperature=0.7,
-                top_p=0.7,
-                max_tokens=max_tokens,
-                messages=[{"role": "system", "content": system_prompt}, *chat_history[uid]]
-            )
-            answer = response.choices[0].message.content
-            chat_history[uid].append({"role": "assistant", "content": answer})
-            bot.reply_to(message, answer)
+            res = client.chat.completions.create(model="llama-3.1-8b-instant", temperature=0.7, max_tokens=max_tokens, messages=[{"role": "system", "content": system_prompt}, *chat_history[uid]])
+            ans = res.choices[0].message.content
+            chat_history[uid].append({"role": "assistant", "content": ans})
+            bot.reply_to(message, ans)
         except Exception as e:
             bot.reply_to(message, f"Error: {str(e)}")
 
 # =========================================
-# FLOW IURAN & CALLBACK
+# FLOW IURAN (DIPERBAIKI)
 # =========================================
 def handle_iuran(message):
     uid = str(message.from_user.id)
-    state = user_states[uid]["state"]
+    state_data = user_states[uid]
+    state = state_data["state"]
+
     if state == "WAITING_NAME":
-        warga_database[uid]["name"] = message.text
-        user_states[uid] = {"state": "WAITING_CATEGORY", "nama": message.text}
+        state_data["nama"] = message.text
+        state_data["state"] = "WAITING_CATEGORY"
         bot.reply_to(message, "Pilih kategori:\n1. Kebersihan\n2. Keamanan\n3. Lain-lain")
     elif state == "WAITING_CATEGORY":
-        kategori_map = {"1": "Kebersihan", "2": "Keamanan", "3": "Lain-lain"}
-        if message.text in kategori_map:
-            user_states[uid]["kategori"] = kategori_map[message.text]
-            user_states[uid]["state"] = "WAITING_DESC" if message.text == "3" else "WAITING_AMOUNT"
+        cat_map = {"1": "Kebersihan", "2": "Keamanan", "3": "Lain-lain"}
+        if message.text in cat_map:
+            state_data["kategori"] = cat_map[message.text]
+            state_data["state"] = "WAITING_DESC" if message.text == "3" else "WAITING_AMOUNT"
             bot.reply_to(message, "Masukin keterangan:" if message.text == "3" else "Masukin nominal:")
+        else: bot.reply_to(message, "Pilih 1, 2, atau 3.")
     elif state == "WAITING_DESC":
-        user_states[uid]["keterangan"] = message.text
-        user_states[uid]["state"] = "WAITING_AMOUNT"
+        state_data["keterangan"] = message.text
+        state_data["state"] = "WAITING_AMOUNT"
         bot.reply_to(message, "Masukin nominal iuran:")
     elif state == "WAITING_AMOUNT":
         raw = re.sub(r'\D', '', message.text)
         if raw.isdigit() and int(raw) >= 10000:
-            user_states[uid]["jumlah"] = int(raw)
-            user_states[uid]["state"] = "WAITING_PHOTO"
-            bot.reply_to(message, "Kirim foto bukti transfer")
+            state_data["jumlah"] = int(raw)
+            state_data["state"] = "WAITING_PHOTO"
+            bot.reply_to(message, "Kirim foto bukti transfer:")
         else: bot.reply_to(message, "⚠️ Minimal Rp10.000")
     elif state == "WAITING_PHOTO":
         if message.photo:
-            data = user_states[uid]
-            pending_approvals[uid] = data
+            pending_approvals[uid] = state_data
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"),
                        types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
-            ket = f"\nKet: {data.get('keterangan', '-')}"
-            bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"💰 Laporan Iuran\nNama: {data['nama']}\nNominal: Rp {data['jumlah']:,}{ket}", reply_markup=markup)
+            ket = f"\nKet: {state_data.get('keterangan', '-')}"
+            bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"💰 Laporan Iuran\nNama: {state_data['nama']}\nNominal: Rp {state_data['jumlah']:,}{ket}", reply_markup=markup)
             bot.reply_to(message, "✅ Laporan terkirim ke Pak RT.")
             del user_states[uid]
-        else: bot.reply_to(message, "Kirim foto bukti transfer")
+        else: bot.reply_to(message, "Kirim foto bukti transfer.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    action, uid = call.data.split("_")
-    if uid not in pending_approvals: return
-    data = pending_approvals[uid]
-    if action == "approve":
-        kas_rt["total"] += data["jumlah"]
-        bot.send_message(uid, f"✅ Iuran diterima. Kas: Rp {kas_rt['total']:,}")
-        bot.edit_message_caption(caption="✅ Iuran disetujui", chat_id=call.message.chat.id, message_id=call.message.message_id)
-    else:
-        bot.send_message(uid, "❌ Iuran ditolak.")
-        bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
-    del pending_approvals[uid]
+    parts = call.data.split("_")
+    action, uid = parts[0], parts[1]
+    if uid in pending_approvals:
+        data = pending_approvals[uid]
+        if action == "approve":
+            kas_rt["total"] += data["jumlah"]
+            bot.send_message(uid, f"✅ Iuran diterima. Kas: Rp {kas_rt['total']:,}")
+            bot.edit_message_caption(caption="✅ Iuran disetujui", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        else:
+            bot.send_message(uid, "❌ Iuran ditolak.")
+            bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        del pending_approvals[uid]
 
 print("Bot Smart RT nyala...")
 bot.infinity_polling()
