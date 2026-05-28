@@ -136,7 +136,7 @@ def main_handler(message):
 
         try:
             response = client.chat.completions.create(
-                model="llama3-70b-8192",
+                model="llama-3.1-8b-instant",
                 temperature=1,
                 max_tokens=120,
                 messages=[{"role": "system", "content": system_prompt}, *chat_history[uid][-8:]]
@@ -214,7 +214,7 @@ def callback_handler(call):
     if action == "approve":
         kas_rt["total"] += data["jumlah"]
         bot.send_message(uid, f"✅ Iuran diterima \n\nKas RT sekarang:\nRp {kas_rt['total']:,}")
-        bot.edit_message_caption(caption="✅ Iuran telah disetujui, terimakasih {data['nama']} karena telah melakukan pembayaran {data['kategori']} sebesar {data['jumlah']}", chat_id=call.message.chat.id, message_id=call.message.message_id)
+        bot.edit_message_caption(caption=f"✅ Iuran telah disetujui, terimakasih {data['nama']} karena telah melakukan pembayaran {data['kategori']} sebesar {data['jumlah']}", chat_id=call.message.chat.id, message_id=call.message.message_id)
     elif action == "reject":
         bot.send_message(uid, "❌ Iuran ditolak.")
         bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
