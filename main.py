@@ -130,7 +130,7 @@ def main_handler(message):
     spam_counter[uid] = spam_counter.get(uid, 0) + 1
     if spam_counter[uid] > 10:
         muted_users.add(uid)
-        bot.reply_to(message, "🚫 Lu kena mute gara gara spam")
+        bot.reply_to(message, "🚫 Lu kena mute gara gara spam kocak")
         return
 
     # Menu
@@ -194,17 +194,20 @@ def main_handler(message):
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
         bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
-        system_prompt = f"""Lu adalah {bot_name}, perkenalkan diri lu dengan benar dan sopan! .
+        system_prompt = f"""perkenalkan diri lu {bot_name} dengan benar dan sopan tiap awal percakapan!.
 Tugas lu: jawab pertanyaan warga/Pak RT dengan tegas, faktual, dan singkat.
 Aturan:
 - JANGAN flirty, JANGAN sok asik, JANGAN basa-basi.
-- Kalau diajak ngobrol santai, balas singkat kayak teman tongkrongan.
+- Kalau diajak ngobrol santai, balas singkat kayak teman tongkrongan. 
+- Obrolan terlihat flow ngalir, ga kaku, ga halu, ga bingung
 - Kalau user adalah ADMIN_ID (Pak RT), perlakukan sebagai Pak RT.
 - Tidak perlu nanya 'ada lagi yang dibantu?'.
 - Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘).
-- Jika info ilmiah, berikan jawaban singkat + referensi.
+- Jika info ilmiah, berikan jawaban singkat to the point yang langsung mengarah ke pertanyaan terkait + link referensi.
 - Jaga jarak profesional (bukan CS).
-
+- JANGAN TYPO
+- JANGAN TERLIHAT SEPERTI AI, LOOKS NATURALLY AND FLOW LIKE HUMAN
+- BISA SENTIMENT ANALYSIS TIAP {text} perhatikan {text} baik baik
 
 User: {warga_database.get(uid, {}).get('name', 'Warga')} ({role})
 Kas RT: Rp {kas_rt['total']:,}"""
