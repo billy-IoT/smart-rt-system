@@ -182,23 +182,33 @@ def main_handler(message):
         return
 
     if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
-        # 1. Simpan laporan ke database
+        # 1. Simpan ke database
         laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
         
-        # 2. Buat pesan teguran AI
+        # 2. Buat teguran AI
         try:
-            system_prompt_lapor = f"kenalkan diri {bot_name}. Buat teguran buat warga: {text}. Aturan: tegas, sopan, langsung ke inti. Akhiri dengan: - {bot_name}"
+            system_prompt_lapor = f"Lu adalah {bot_name}. Buat teguran buat warga: {text}. Aturan: tegas, sopan, langsung ke inti. Akhiri dengan: - {bot_name}"
             res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
             pesan_ai = res.choices[0].message.content
         except:
             pesan_ai = f"⚠️ Teguran terkait: {text}\n\n- {bot_name}"
 
-        # 3. KIRIM DI GRUP (Pasti jalan karena di luar looping target)
-        bot.send_message(message.chat.id, f"📢 TEGURAN TERBUKA\n\n{pesan_ai}")
+        # 3. LOGIKA FORWARD KE GRUP & JAPRI
+        # Ganti CHAT_ID_GRUP dengan ID grup Anda (angka negatif, misal -100xxxxxxx)
+        CHAT_ID_GRUP = -100123456789 
         
-        # 4. KIRIM JAPRI (Hanya jika ketemu usernya)
-        mentions = re.findall(r'@(\w+)', text)
-        for username in mentions:
+        if message.chat.type == "private":
+            # Jika laporan dari Japri: Info ke pelapor & Forward ke grup
+            bot.reply_to(message, "✅ Laporan diterima, akan segera diproses di grup.")
+            bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN MASUK VIA JAPRI]\n\n{text}")
+            # Bot tetap kirim teguran ke pelaku (jika ditemukan)
+        else:
+            # Jika laporan dari Grup: Reply langsung di grup
+            bot.reply_to(message, f"📢 TEGURAN TERBUKA\n\n{pesan_ai}")
+
+        # 4. KIRIM JAPRI KE PELAKU (Berlaku untuk semua)
+        mentioned = re.findall(r'@(\w+)', text)
+        for username in mentioned:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
                 try:
@@ -206,8 +216,7 @@ def main_handler(message):
                 except:
                     pass 
         
-        return # Agar tidak diproses AI chat
-
+        return
     if is_bot_target(message):
         chat_history.setdefault(uid, [])
         chat_history[uid].append({"role": "user", "content": text})
