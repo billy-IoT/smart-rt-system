@@ -41,10 +41,14 @@ def get_greeting():
     return "Malam"
 
 def is_bot_target(message):
+    # Kalau di private, selalu balas
     if message.chat.type == "private": return True
+    
+    # Kalau di grup, HANYA BALAS JIKA DI-REPLY ke bot ATAU di-tag @botname
     if message.reply_to_message and message.reply_to_message.from_user.is_bot: return True
     if message.text and f"@{bot.get_me().username}" in message.text: return True
-    return False
+    
+    return False # Sisanya abaikan (biar tidak nyerocos)
 
 def limit_history(uid):
     if uid in chat_history:
