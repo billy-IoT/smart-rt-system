@@ -4,7 +4,7 @@ from telebot import types
 from groq import Groq
 import re
 import datetime
-import pytz  # Tambahan untuk akurasi waktu WIB
+import pytz 
 
 # --- KONFIGURASI ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -106,19 +106,27 @@ def main_handler(message):
         bot.reply_to(message, f"{get_greeting()}! Kas RT saat ini: Rp {kas_rt['total']:,}")
         return
 
-    # 5. AI Processor
+    # 5. AI Processor dengan Persona yang Diperkuat
     if is_bot_target(message):
         if uid not in chat_history: chat_history[uid] = []
         chat_history[uid].append({"role": "user", "content": text})
         
         system_prompt = f"""
-        Anda adalah asisten cerdas Smart RT. Pedoman:
+        Anda adalah Smart RT Assistant, asisten digital resmi untuk lingkungan RT.
+        Persona Anda: Profesional, ramah, tegas dalam aturan, namun tetap merakyat.
+        
+        Aturan Identitas:
+        1. Lawan bicara Anda adalah {role} bernama {warga_database.get(uid, {}).get('name', 'Warga')}.
+        2. Jika lawan bicara adalah Pak RT, gunakan sapaan hormat "Pak RT".
+        3. Jika lawan bicara adalah Warga, gunakan sapaan "Bapak/Ibu" atau nama panggilan mereka.
+        4. Jangan pernah tertukar antara identitas Warga dan Pak RT.
+        5. Jika ditanya "Siapa gua?", jawablah dengan menyebutkan nama mereka dan peran mereka di lingkungan RT.
+        
+        Panduan Tugas:
         1. Wajib cari info internet untuk pertanyaan umum dan sertakan sumber/link.
         2. Kas RT saat ini: Rp {kas_rt['total']:,}.
-        3. Bahasa gaul, sopan, solutif.
-        4. Patuhi aturan RT. Arahkan hal di luar wewenang ke Pak RT.
-        5. Jaga privasi warga dan netral dalam mediasi.
-        Identitas lawan bicara: {role} bernama {warga_database.get(uid, {}).get('name', 'Warga')}.
+        3. Arahkan hal di luar wewenang Anda ke Pak RT.
+        4. Jaga privasi warga dan netral dalam mediasi.
         """
         res = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}] + chat_history[uid][-5:], 
@@ -143,7 +151,6 @@ def handle_lapor_steps(message):
     elif state == "WAITING_PHOTO" and message.photo:
         pending_approvals[uid] = {'nama': user_states[uid]['nama'], 'jumlah': user_states[uid]['jumlah']}
         markup = types.InlineKeyboardMarkup()
-        # Tambah tombol Approve DAN Reject
         markup.add(
             types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"),
             types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}")
@@ -155,13 +162,12 @@ def handle_lapor_steps(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     action, uid = call.data.split("_")
-    
     if action == "approve":
         kas_rt["total"] += pending_approvals[uid]['jumlah']
         bot.send_message(uid, f"✅ Iuran diterima! Kas RT kini: Rp {kas_rt['total']:,}")
         bot.edit_message_caption(f"Status: ✅ DISETUJUI", call.message.chat.id, call.message.message_id)
-        
     elif action == "reject":
         bot.send_message(uid, "❌ Iuran Anda ditolak oleh Pak RT. Silakan kirim ulang bukti yang lebih jelas.")
         bot.edit_message_caption(f"Status: ❌ DITOLAK", call.message.chat.id, call.message.message_id)
+
 bot.infinity_polling()
