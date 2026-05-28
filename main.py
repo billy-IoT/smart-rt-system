@@ -70,28 +70,45 @@ def main_handler(message):
         handle_lapor_steps(message)
         return
 
+    # Cek dulu fiturnya (di luar is_bot_target agar tetap jalan meski nggak di-tag)
+    if "lapor" in text.lower() or "parkir" in text.lower():
+        mentioned = re.findall(r'@(\w+)', text)
+        for username in mentioned:
+            target_uid = next((u for u, data in warga_database.items() if data.get('username') == username), None)
+            if target_uid:
+                try:
+                    bot.send_message(target_uid, f"⚠️ Notifikasi Laporan: Anda dilaporkan oleh {warga_database[uid]['name']} terkait: '{text}'. Mohon segera diselesaikan.")
+                    bot.reply_to(message, f"✅ Laporan terhadap @{username} telah diteruskan secara privat.")
+                except:
+                    bot.reply_to(message, f"❌ Gagal kirim japri ke @{username}. Pastikan dia sudah tekan /start.")
+
+    # Sekarang baru cek AI Processor
     if is_bot_target(message):
         if uid not in chat_history: chat_history[uid] = []
-        chat_history[uid].append({"role": "user", "content": text}) 
-        system_prompt = f"""
-        Anda adalah asisten cerdas Smart RT yang memiliki akses ke informasi global.
-        Tugas Anda:
-        1. Jika warga bertanya tentang hal umum, edukasi, atau berita terbaru, Anda WAJIB mencari informasi tersebut dari sumber terpercaya (internet).
-        2. Gunakan penalaran Anda untuk memberikan jawaban berdasarkan data internet terkini jika informasi tidak ada di memori Anda.
-        3. SELALU cantumkan sumber atau referensi link jika jawaban diambil dari luar.
-        4. Kas RT saat ini: Rp {kas_rt['total']:,}.
-        5. Gunakan bahasa gaul yang sopan, solutif, dan komunikatif.
-        6. Untuk urusan internal RT, patuhi aturan lingkungan setempat.
+        chat_history[uid].append({"role": "user", "content": text})
         
-        Identitas lawan bicara: {role} bernama {warga_database[uid]['name']}.
+        # Pake system_prompt yang lengkap (cuma satu kali)
+        system_prompt = f"""
+        Anda adalah asisten cerdas Smart RT. Berikut adalah pedoman perilaku Anda:
+        1. Anda WAJIB mencari informasi dari internet/sumber terpercaya untuk pertanyaan umum, edukasi, atau berita terbaru.
+        2. Gunakan penalaran Anda untuk memberikan jawaban berdasarkan data terkini jika informasi tidak ada di memori.
+        3. SELALU cantumkan sumber atau referensi link jika jawaban diambil dari luar.
+        4. Kas RT saat ini: Rp {kas_rt['total']:,}. Harap gunakan data ini sebagai rujukan utama.
+        5. Gunakan bahasa gaul yang sopan, solutif, dan komunikatif agar warga merasa nyaman.
+        6. Untuk urusan internal RT, Anda harus patuh pada aturan lingkungan setempat.
+        7. Jika tidak tahu jawaban atau pertanyaan di luar wewenang Anda, arahkan dengan sopan ke Pak RT.
+        8. Jaga privasi data warga dan tidak boleh membocorkan informasi sensitif antar warga.
+        9. Bersikap netral, adil, dan tidak memihak dalam memediasi laporan atau keluhan warga.
+
+        Identitas lawan bicara saat ini: {role} bernama {warga_database[uid]['name']}.
         """
-        system_prompt = f"Anda asisten Smart RT. Bicara dengan {role} bernama {warga_database[uid]['name']}. Kas RT: {kas_rt['total']}."
+        
         res = client.chat.completions.create(
             messages=[{"role": "system", "content": system_prompt}] + chat_history[uid][-5:], 
             model="llama-3.3-70b-versatile"
         )
         bot.reply_to(message, res.choices[0].message.content)
-
+        
 # --- HANDLER IURAN DENGAN VALIDASI ---
 def handle_lapor_steps(message):
     uid = str(message.from_user.id)
