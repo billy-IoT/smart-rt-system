@@ -72,7 +72,7 @@ def main_handler(message):
 
     if is_bot_target(message):
         if uid not in chat_history: chat_history[uid] = []
-        chat_history[uid].append({"role": "user", "content": text}
+        chat_history[uid].append({"role": "user", "content": text}) 
         system_prompt = f"""
         Anda adalah asisten cerdas Smart RT yang memiliki akses ke informasi global.
         Tugas Anda:
