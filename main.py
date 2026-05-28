@@ -187,22 +187,32 @@ def main_handler(message):
             try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\nPelapor: {message.from_user.first_name}\nIsi: {text}")
             except: pass
 
-        mentioned = re.findall(r'@(\w+)', text)
-        for username in mentioned:
-            target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
-            if target_uid:
-                try:
-                    system_prompt_lapor = f"kenalkan diri dulu {bot_name}. Buat teguran warga: {text}. Aturan: tegas, sopan, singkat, jangan formal, langsung ke inti. Akhiri dengan: - {bot_name}"
-                    res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt_lapor}])
-                    pesan_ai = res.choices[0].message.content
-                except:
-                    pesan_ai = f"⚠️ Anda dilaporkan terkait:\n{text}\n\n- {bot_name}"
-                
-                try:
-                    bot.send_message(target_uid, f"📢 Teguran RT (Japri):\n\n{pesan_ai}")
-                    bot.reply_to(message, f"✅ Laporan dicatat di grup dan target @{username} sudah ditegur via japri.")
-                except:
-                    bot.reply_to(message, f"❌ Gagal kirim japri ke @{username}.")
+        # ... (di dalam if any(k in text.lower()...))
+
+    mentioned = re.findall(r'@(\w+)', text)
+    for username in mentioned:
+        target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
+        
+        if target_uid:
+            # 1. COBA GENERATE TEGURAN DENGAN AI
+            try:
+                system_prompt_lapor = f"Buat teguran singkat, tegas, tapi sopan untuk warga yang bermasalah. Masalahnya: {text}. Akhiri dengan: - {bot_name}"
+                res = client.chat.completions.create(
+                    model="llama-3.1-8b-instant", 
+                    messages=[{"role": "system", "content": system_prompt_lapor}]
+                )
+                pesan_ai = res.choices[0].message.content
+            except Exception as e:
+                # 2. FALLBACK: Jika AI gagal (misal koneksi error/API habis), pakai pesan standar
+                print(f"Error AI: {e}")
+                pesan_ai = f"📢 Teguran RT: Anda dilaporkan terkait: '{text}'. Mohon segera diperbaiki agar lingkungan RT kita tetap nyaman. - {bot_name}"
+            
+            # 3. KIRIM TEGURAN KE JAPRI
+            try:
+                bot.send_message(target_uid, f"📢 Teguran RT (Japri):\n\n{pesan_ai}")
+                bot.reply_to(message, f"✅ Teguran otomatis sudah dikirim ke @{username} via japri.")
+            except Exception as e:
+                bot.reply_to(message, f"❌ Gagal kirim japri ke @{username} (mungkin belum klik /start).")       
         return
 
     if is_bot_target(message):
@@ -334,7 +344,7 @@ def main_handler(message):
         laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
         
         try:
-            prompt = f"Buat teguran buat warga yang: {text}. Singkat, tegas, akhiri dengan - {bot_name}"
+            prompt = f"Buat teguran buat warga yang: {text}. Jabarkan dengan tegas, akhiri dengan - {bot_name}"
             res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
             pesan_ai = res.choices[0].message.content
         except: pesan_ai = f"⚠️ Teguran terkait: {text}\n\n- {bot_name}"
