@@ -196,7 +196,7 @@ def main_handler(message):
         if target_uid:
             # 1. COBA GENERATE TEGURAN DENGAN AI
             try:
-                system_prompt_lapor = f"Buat teguran singkat, tegas, tapi sopan untuk warga yang bermasalah. Masalahnya: {text}. Akhiri dengan: - {bot_name}"
+                system_prompt_lapor = f"Buat teguran tegas, tapi sopan untuk warga yang bermasalah. Masalahnya: {text}. Setelah 📢 Teguran RT, Awali dengan Hai Warga @{username}. Akhiri dengan: - {bot_name}"
                 res = client.chat.completions.create(
                     model="llama-3.1-8b-instant", 
                     messages=[{"role": "system", "content": system_prompt_lapor}]
@@ -205,11 +205,11 @@ def main_handler(message):
             except Exception as e:
                 # 2. FALLBACK: Jika AI gagal (misal koneksi error/API habis), pakai pesan standar
                 print(f"Error AI: {e}")
-                pesan_ai = f"📢 Teguran RT: Anda dilaporkan terkait: '{text}'. Mohon segera diperbaiki agar lingkungan RT kita tetap nyaman. - {bot_name}"
+                pesan_ai = f"📢 Teguran RT: hai @{username} Anda dilaporkan terkait: '{text}'. Mohon segera diperbaiki agar lingkungan RT kita tetap nyaman. - {bot_name}"
             
             # 3. KIRIM TEGURAN KE JAPRI
             try:
-                bot.send_message(target_uid, f"📢 Teguran RT (Japri):\n\n{pesan_ai}")
+                bot.send_message(target_uid, f"📢 Teguran RT:\n\n hai @{username}\n\n{pesan_ai}")
                 bot.reply_to(message, f"✅ Teguran otomatis sudah dikirim ke @{username} via japri.")
             except Exception as e:
                 bot.reply_to(message, f"❌ Gagal kirim japri ke @{username} (mungkin belum klik /start).")       
