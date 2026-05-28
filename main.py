@@ -106,10 +106,18 @@ def main_handler(message):
     # Menu
     if text == "💰 Lapor Iuran":
         user_states[uid] = {"state": "WAITING_NAME"}
-        bot.reply_to(message, "Masukin nama lengkap lu:")
+        bot.reply_to(message, "Masukin nama lengkap:")
         return
     elif text == "📋 Cek Kas":
-        bot.reply_to(message, f"💰 Kas RT sekarang:\nRp {kas_rt['total']:,}")
+        # Menampilkan rincian saldo per kategori secara spesifik
+        detail_kas = (f"💰 Rincian Kas RT:\n"
+                      f"--------------------------\n"
+                      f"Kebersihan: Rp {kas_rt['Kebersihan']:,}\n"
+                      f"Keamanan:   Rp {kas_rt['Keamanan']:,}\n"
+                      f"Lain-lain:  Rp {kas_rt['Lain-lain']:,}\n"
+                      f"--------------------------\n"
+                      f"TOTAL:      Rp {kas_rt['total']:,}")
+        bot.reply_to(message, detail_kas)
         return
 
     # Lapor Warga Bermasalah
