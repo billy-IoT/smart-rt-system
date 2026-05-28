@@ -143,7 +143,11 @@ def handle_lapor_steps(message):
     elif state == "WAITING_PHOTO" and message.photo:
         pending_approvals[uid] = {'nama': user_states[uid]['nama'], 'jumlah': user_states[uid]['jumlah']}
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"))
+        # Tambah tombol Approve DAN Reject
+        markup.add(
+            types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"),
+            types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}")
+        )
         bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"Iuran dari {user_states[uid]['nama']}\nNominal: Rp {user_states[uid]['jumlah']:,}", reply_markup=markup)
         bot.reply_to(message, "Laporan terkirim ke Pak RT!")
         del user_states[uid]
@@ -151,9 +155,13 @@ def handle_lapor_steps(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     action, uid = call.data.split("_")
+    
     if action == "approve":
         kas_rt["total"] += pending_approvals[uid]['jumlah']
         bot.send_message(uid, f"✅ Iuran diterima! Kas RT kini: Rp {kas_rt['total']:,}")
-    bot.edit_message_caption(f"Status: {action.upper()}", call.message.chat.id, call.message.message_id)
-
+        bot.edit_message_caption(f"Status: ✅ DISETUJUI", call.message.chat.id, call.message.message_id)
+        
+    elif action == "reject":
+        bot.send_message(uid, "❌ Iuran Anda ditolak oleh Pak RT. Silakan kirim ulang bukti yang lebih jelas.")
+        bot.edit_message_caption(f"Status: ❌ DITOLAK", call.message.chat.id, call.message.message_id)
 bot.infinity_polling()
