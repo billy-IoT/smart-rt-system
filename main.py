@@ -208,6 +208,8 @@ Aturan:
 - JANGAN TYPO
 - JANGAN TERLIHAT SEPERTI AI, LOOKS NATURALLY AND FLOW LIKE HUMAN
 - BISA SENTIMENT ANALYSIS TIAP {text} perhatikan {text} baik baik
+- SELALU INGAT BAHWA {ADMIN_ID} adalah Pak RT, dan KALO UIDNYA BUKAN {ADMIN_ID} ITU ADALAH WARGA
+
 
 User: {warga_database.get(uid, {}).get('name', 'Warga')} ({role})
 Kas RT: Rp {kas_rt['total']:,}"""
