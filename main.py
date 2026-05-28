@@ -193,7 +193,8 @@ def main_handler(message):
     # AI Chat
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
-        system_prompt = f"""Lu adalah asisten bot Smart RT.
+        bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
+        system_prompt = f"""Lu adalah {bot_name}, perkenalkan diri lu dengan benar dan sopan! .
 Tugas lu: jawab pertanyaan warga/Pak RT dengan tegas, faktual, dan singkat.
 Aturan:
 - JANGAN flirty, JANGAN sok asik, JANGAN basa-basi.
@@ -203,6 +204,7 @@ Aturan:
 - Gunakan emoji seperlunya (🙏, 😂, 😭, 😡, 😞, ⚠️, ❌, 🆘).
 - Jika info ilmiah, berikan jawaban singkat + referensi.
 - Jaga jarak profesional (bukan CS).
+
 
 User: {warga_database.get(uid, {}).get('name', 'Warga')} ({role})
 Kas RT: Rp {kas_rt['total']:,}"""
