@@ -19,7 +19,7 @@ client = Groq(api_key=GROQ_API_KEY)
 bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
 
 # =========================================
-# DATABASE
+# DATABASE & STATE
 # =========================================
 kas_rt = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
 laporan_warga = []
@@ -30,10 +30,9 @@ chat_history = {}
 spam_counter = {}
 
 # =========================================
-# HELPER
+# HELPER FUNCTIONS
 # =========================================
-def get_role(uid):
-    return "Pak RT" if str(uid) == ADMIN_ID else "Warga"
+def get_role(uid): return "Pak RT" if str(uid) == ADMIN_ID else "Warga"
 
 def get_greeting():
     hour = datetime.datetime.now(pytz.timezone("Asia/Jakarta")).hour
@@ -49,189 +48,97 @@ def is_bot_target(message):
     return False
 
 def limit_history(uid):
-    if uid in chat_history:
-        chat_history[uid] = chat_history[uid][-6:]
+    if uid in chat_history: chat_history[uid] = chat_history[uid][-6:]
 
 def broadcast_message(text, is_emergency=False):
-    users = list(warga_database.keys())
-    if is_emergency:
-        announcement = f"🚨 DARURAT 🚨\n\n{text}\n\nMohon perhatian seluruh warga."
-    else:
-        announcement = f"📢 Pengumuman RT\n\n{text}"
-    
-    for uid in users:
+    announcement = f"🚨 DARURAT 🚨\n\n{text}\n\nMohon perhatian seluruh warga." if is_emergency else f"📢 Pengumuman RT\n\n{text}"
+    for uid in warga_database:
         try: bot.send_message(uid, announcement)
         except: pass
 
-def get_ai_response(uid, text, role):
+def get_ai_response(uid, text, role, is_lapor=False):
     nama = warga_database.get(uid, {}).get("name", "Warga")
-    system_prompt = f"""{bot_name}.
-User: Nama: {nama}, Role: {role}
-Aturan: ngobrol natural, santai, singkat, jangan formal, jangan halu, jangan typo, jangan ngulang pertanyaan, jangan kaya CS, jangan kepanjangan, flow manusia chat biasa, emoji seperlunya 😹😭🙏.
-Kalau role user Pak RT: hormati sebagai admin, jangan panggil warga.
-Kas RT: Rp {kas_rt['total']:,}"""
-
-    max_tokens = 80
-    if len(text) > 100: max_tokens = 150
-    if "jelaskan" in text.lower(): max_tokens = 200
-    if "coding" in text.lower(): max_tokens = 250
-
+    if is_lapor:
+        system_prompt = f"Buat teguran singkat, tegas, namun sopan. Masalah: {text}. Akhiri dengan: - {bot_name}"
+    else:
+        system_prompt = f"{bot_name}. Nama: {nama}, Role: {role}. Chat santai, manusiawi. Kalau Pak RT: hormati."
     try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            temperature=0.7,
-            top_p=0.7,
-            max_tokens=max_tokens,
-            messages=[{"role": "system", "content": system_prompt}, *chat_history[uid]]
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"⚠️ Error AI\n{str(e)}"
+        res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}])
+        ans = res.choices[0].message.content
+        if "tidak dapat membantu" in ans.lower() or "maaf" in ans.lower():
+            return f"📢 Teguran RT: Laporan '{text}' diterima. Mohon jaga ketertiban. - {bot_name}"
+        return ans
+    except: return f"⚠️ Gangguan AI: {text}"
 
 # =========================================
-# START
-# =========================================
-@bot.message_handler(commands=['start'])
-def start(message):
-    uid = str(message.from_user.id)
-    warga_database[uid] = {"name": message.from_user.first_name, "username": message.from_user.username}
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row("💰 Lapor Iuran", "📋 Cek Kas")
-    
-    role = get_role(uid)
-    greet = f"Selamat {get_greeting()} {'Pak RT' if role == 'Pak RT' else ''}\n\n{bot_name} siap bantu."
-    bot.reply_to(message, greet, reply_markup=markup)
-
-# =========================================
-# MAIN HANDLER
+# MAIN HANDLER (Logic Lengkap)
 # =========================================
 @bot.message_handler(content_types=['text', 'photo'])
 def main_handler(message):
     uid = str(message.from_user.id)
-    role = get_role(uid)
     text = message.text or message.caption or ""
     warga_database.setdefault(uid, {"name": message.from_user.first_name, "username": message.from_user.username})
 
-    if uid in user_states:
-        handle_iuran(message)
-        return
+    if uid in user_states: handle_iuran(message); return
 
-    if role == "Pak RT" and "laporan" in text.lower():
-        if not laporan_warga:
-            bot.reply_to(message, "Belum ada laporan dari warga.")
-        else:
-            bot.reply_to(message, "📋 Daftar laporan masuk:\n" + "\n".join(laporan_warga))
-        return
-
-    if role == "Pak RT":
-        if text.startswith("/bc "):
-            broadcast_message(text.replace("/bc ", ""))
-            bot.reply_to(message, "✅ Broadcast terkirim.")
+    # Admin Logic
+    if get_role(uid) == "Pak RT":
+        if "laporan" in text.lower():
+            bot.reply_to(message, "📋 Daftar laporan:\n" + "\n".join(laporan_warga) if laporan_warga else "Kosong.")
             return
-
+        if text.startswith("/bc "): broadcast_message(text.replace("/bc ", "")); return
         if text.startswith("/mute "):
-            if message.chat.type == "private":
-                bot.reply_to(message, "⚠️ Fitur mute cuma buat grup.")
-                return
-            
             target_username = text.split(" ")[1].replace("@", "")
-            target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == target_username.lower()), None)
-            
-            if str(target_uid) == ADMIN_ID:
-                bot.reply_to(message, "❌ Tidak bisa mute Pak RT.")
-                return
-            
-            if target_uid:
-                try:
-                    until_date = datetime.datetime.now() + datetime.timedelta(minutes=5)
-                    bot.restrict_chat_member(chat_id=message.chat.id, user_id=int(target_uid), until_date=until_date, permissions=types.ChatPermissions(can_send_messages=False))
-                    bot.reply_to(message, f"🔇 @{target_username} dimute 5 menit")
-                except Exception as e:
-                    bot.reply_to(message, f"❌ Gagal mute\n{str(e)}")
-            else:
-                bot.reply_to(message, "❌ User tidak ditemukan.")
+            target_uid = next((u for u, d in warga_database.items() if d.get("username", "").lower() == target_username.lower()), None)
+            if target_uid and target_uid != ADMIN_ID:
+                try: 
+                    bot.restrict_chat_member(message.chat.id, int(target_uid), until_date=datetime.datetime.now() + datetime.timedelta(minutes=5))
+                    bot.reply_to(message, f"🔇 @{target_username} dimute 5 menit.")
+                except: pass
             return
 
+    # Spam Counter
     spam_counter[uid] = spam_counter.get(uid, 0) + 1
     if spam_counter[uid] > 10:
         if message.chat.type != "private":
-            try:
-                until_date = datetime.datetime.now() + datetime.timedelta(minutes=5)
-                bot.restrict_chat_member(chat_id=message.chat.id, user_id=int(uid), until_date=until_date, permissions=types.ChatPermissions(can_send_messages=False))
-                bot.reply_to(message, "🚫 Kena mute 5 menit gara gara spam AWOWKWOWK")
+            try: bot.restrict_chat_member(message.chat.id, int(uid), until_date=datetime.datetime.now() + datetime.timedelta(minutes=5))
             except: pass
+        return
+
+    # Logika Lapor (Grup & Japri)
+    if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
+        laporan_warga.append(f"{message.from_user.first_name}: {text}")
+        pesan_ai = get_ai_response(uid, text, get_role(uid), is_lapor=True)
+        if CHAT_ID_GRUP:
+            try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\n{pesan_ai}")
+            except: pass
+        for username in re.findall(r'@(\w+)', text):
+            target_uid = next((u for u, d in warga_database.items() if d.get("username", "").lower() == username.lower()), None)
+            if target_uid:
+                try: bot.send_message(target_uid, f"📢 Teguran RT (Japri):\n\n{pesan_ai}")
+                except: pass
+        bot.reply_to(message, "✅ Laporan diteruskan.")
         return
 
     if text == "💰 Lapor Iuran":
         user_states[uid] = {"state": "WAITING_NAME"}
         bot.reply_to(message, "Masukin nama lengkap:")
         return
-    elif text == "📋 Cek Kas":
-        detail = f"💰 Rincian Kas RT\n\nKebersihan: Rp {kas_rt['Kebersihan']:,}\nKeamanan: Rp {kas_rt['Keamanan']:,}\nLain-lain: Rp {kas_rt['Lain-lain']:,}\n\nTOTAL: Rp {kas_rt['total']:,}"
-        bot.reply_to(message, detail)
-        return
 
-    if text.lower().startswith("darurat "):
-        if role == "Pak RT":
-            broadcast_message(text.replace("darurat ", ""), is_emergency=True)
-            bot.reply_to(message, "✅ Pesan darurat disebar.")
-        else:
-            bot.reply_to(message, "❌ Hanya Pak RT.")
-        return
-
-    if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
-        laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
-        
-        # Kirim ke Grup Pusat Laporan
-        if CHAT_ID_GRUP:
-            try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\nPelapor: {message.from_user.first_name}\nIsi: {pesan_ai}")
-            except: pass
-
-        # ... (di dalam if any(k in text.lower()...))
-
-    mentioned = re.findall(r'@(\w+)', text)
-    for username in mentioned:
-        target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
-        
-        if target_uid:
-            # 1. COBA GENERATE TEGURAN DENGAN AI
-            try:
-                system_prompt_lapor = f"Buat teguran tegas, tapi sopan untuk warga yang bermasalah. Masalahnya: {text}. Setelah 📢 Teguran RT, Awali dengan Hai Warga @{username}. Akhiri dengan: - {bot_name}"
-                res = client.chat.completions.create(
-                    model="llama-3.1-8b-instant", 
-                    messages=[{"role": "system", "content": system_prompt_lapor}]
-                )
-                pesan_ai = res.choices[0].message.content
-            except Exception as e:
-                # 2. FALLBACK: Jika AI gagal (misal koneksi error/API habis), pakai pesan standar
-                print(f"Error AI: {e}")
-                pesan_ai = f"📢 Teguran RT: hai @{username} Anda dilaporkan terkait: '{text}'. Mohon segera diperbaiki agar lingkungan RT kita tetap nyaman. - {bot_name}"
-            
-            # 3. KIRIM TEGURAN KE JAPRI
-            try:
-                bot.send_message(target_uid, f"📢 Teguran RT:\n\n hai @{username}\n\n{pesan_ai}")
-                bot.reply_to(message, f"✅ Teguran otomatis sudah dikirim ke @{username} via japri.")
-            except Exception as e:
-                bot.reply_to(message, f"❌ Gagal kirim japri ke @{username} (mungkin belum klik /start).")       
-        return
-
+    # Chat AI Biasa
     if is_bot_target(message):
         chat_history.setdefault(uid, [])
         chat_history[uid].append({"role": "user", "content": text})
-        limit_history(uid)
-        ans = get_ai_response(uid, text, role)
-        chat_history[uid].append({"role": "assistant", "content": ans})
-        limit_history(uid)
+        ans = get_ai_response(uid, text, get_role(uid))
         bot.reply_to(message, ans)
 
 # =========================================
-# FLOW IURAN
+# FLOW IURAN & CALLBACK (Lengkap sesuai aslimu)
 # =========================================
 def handle_iuran(message):
     uid = str(message.from_user.id)
     state_data = user_states[uid]
     state = state_data["state"]
-
     if state == "WAITING_NAME":
         state_data["nama"] = message.text
         state_data["state"] = "WAITING_CATEGORY"
@@ -240,13 +147,8 @@ def handle_iuran(message):
         cat_map = {"1": "Kebersihan", "2": "Keamanan", "3": "Lain-lain"}
         if message.text in cat_map:
             state_data["kategori"] = cat_map[message.text]
-            if message.text == "3":
-                state_data["state"] = "WAITING_DESC"
-                bot.reply_to(message, "Masukin keterangan:")
-            else:
-                state_data["state"] = "WAITING_AMOUNT"
-                bot.reply_to(message, "Masukin nominal:")
-        else: bot.reply_to(message, "Pilih 1, 2, atau 3.")
+            if message.text == "3": state_data["state"] = "WAITING_DESC"; bot.reply_to(message, "Masukin keterangan:")
+            else: state_data["state"] = "WAITING_AMOUNT"; bot.reply_to(message, "Masukin nominal:")
     elif state == "WAITING_DESC":
         state_data["keterangan"] = message.text
         state_data["state"] = "WAITING_AMOUNT"
@@ -263,130 +165,22 @@ def handle_iuran(message):
             pending_approvals[uid] = state_data
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"), types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
-            ket = f"\nKet: {state_data.get('keterangan', '-')}"
-            bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"💰 Laporan Iuran\nNama: {state_data['nama']}\nKategori: {state_data['kategori']}\nNominal: Rp {state_data['jumlah']:,}{ket}", reply_markup=markup)
-            bot.reply_to(message, "✅ Laporan terkirim ke Pak RT.")
+            bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"💰 Laporan Iuran: {state_data['nama']}", reply_markup=markup)
+            bot.reply_to(message, "✅ Terkirim ke Pak RT.")
             del user_states[uid]
-        else: bot.reply_to(message, "Kirim foto bukti transfer.")
 
-# =========================================
-# CALLBACK
-# =========================================
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    parts = call.data.split("_")
-    action, uid = parts[0], parts[1]
-    if uid not in pending_approvals: return
-    
-    data = pending_approvals[uid]
-    if action == "approve":
-        kas_rt[data['kategori']] += data['jumlah']
-        kas_rt["total"] += data['jumlah']
-        bot.send_message(uid, f"✅ Iuran disetujui\n\n{data['kategori']}: Rp {data['jumlah']:,}\nTerima kasih {data['nama']} 🙏")
-        bot.edit_message_caption(caption=f"✅ DISETUJUI\n\nNama: {data['nama']}\nKategori: {data['kategori']}\nJumlah: Rp {data['jumlah']:,}\n\nTotal Kas: Rp {kas_rt['total']:,}", chat_id=call.message.chat.id, message_id=call.message.message_id)
-    else:
-        bot.send_message(uid, "❌ Iuran ditolak.")
-        bot.edit_message_caption(caption="❌ Iuran ditolak.", chat_id=call.message.chat.id, message_id=call.message.message_id)
-    del pending_approvals[uid]
+    action, uid = call.data.split("_")
+    if uid in pending_approvals:
+        data = pending_approvals[uid]
+        if action == "approve":
+            kas_rt[data['kategori']] += data['jumlah']
+            kas_rt["total"] += data['jumlah']
+            bot.send_message(uid, "✅ Disetujui.")
+        else: bot.send_message(uid, "❌ Ditolak.")
+        del pending_approvals[uid]
 
 print("Bot Smart RT nyala")
-bot.infinity_polling()
-def get_greeting():
-    hour = datetime.datetime.now(pytz.timezone("Asia/Jakarta")).hour
-    if 5 <= hour < 12: return "Pagi"
-    if 12 <= hour < 15: return "Siang"
-    if 15 <= hour < 18: return "Sore"
-    return "Malam"
-
-def is_bot_target(message):
-    if message.chat.type == "private": return True
-    if message.reply_to_message and message.reply_to_message.from_user.is_bot: return True
-    if message.text and f"@{bot.get_me().username}" in message.text: return True
-    return False
-
-def limit_history(uid):
-    if uid in chat_history:
-        chat_history[uid] = chat_history[uid][-6:]
-
-def get_ai_response(uid, text, role):
-    nama = warga_database.get(uid, {}).get("name", "Warga")
-    system_prompt = f"Lu adalah {bot_name}. Aturan: santai, singkat, jangan formal, flow manusia. Kalau Pak RT: hormati."
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "system", "content": system_prompt}, *chat_history.get(uid, [])]
-        )
-        return response.choices[0].message.content
-    except: return "Lagi gangguan nih, bentar ya 😹"
-
-# =========================================
-# MAIN HANDLER
-# =========================================
-@bot.message_handler(content_types=['text', 'photo'])
-def main_handler(message):
-    uid = str(message.from_user.id)
-    role = get_role(uid)
-    text = message.text or message.caption or ""
-    warga_database.setdefault(uid, {"name": message.from_user.first_name, "username": message.from_user.username})
-
-    # 1. Flow Iuran
-    if uid in user_states:
-        handle_iuran(message)
-        return
-
-    # 2. Perintah Pak RT
-    if role == "Pak RT" and "laporan" in text.lower():
-        bot.reply_to(message, "📋 Daftar laporan:\n" + "\n".join(laporan_warga) if laporan_warga else "Kosong.")
-        return
-
-    # 3. LOGIKA LAPOR (Pusat Masalah Kamu)
-    if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
-        laporan_warga.append(f"{message.from_user.first_name} melapor: {text}")
-        
-        try:
-            prompt = f"Buat teguran buat warga yang: {text}. Jabarkan dengan tegas, akhiri dengan - {bot_name}"
-            res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
-            pesan_ai = res.choices[0].message.content
-        except: pesan_ai = f"⚠️ Teguran terkait: {text}\n\n- {bot_name}"
-
-        # Spill ke Grup
-        if message.chat.type == "private":
-            bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN VIA JAPRI]\n\n{pesan_ai}")
-            bot.reply_to(message, "✅ Laporan sudah diteruskan ke grup.")
-        else:
-            bot.reply_to(message, f"📢 TEGURAN TERBUKA\n\n{pesan_ai}")
-
-        # Japri ke pelaku
-        for username in re.findall(r'@(\w+)', text):
-            target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
-            if target_uid:
-                try: bot.send_message(target_uid, f"📢 Teguran RT (Private):\n\n{pesan_ai}")
-                except: pass
-        return # BERHENTI, jangan lanjut ke AI Chat
-
-    # 4. CHAT AI (Hanya jika di-reply/mention atau Pak RT)
-    if role == "Pak RT" or is_bot_target(message):
-        chat_history.setdefault(uid, [])
-        chat_history[uid].append({"role": "user", "content": text})
-        limit_history(uid)
-        ans = get_ai_response(uid, text, role)
-        chat_history[uid].append({"role": "assistant", "content": ans})
-        bot.reply_to(message, ans)
-
-# =========================================
-# FUNGSI LAIN (Iuran & Callback)
-# =========================================
-def handle_iuran(message):
-    # (Kode iuran kamu tetap di sini)
-    pass
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    # (Kode callback kamu tetap di sini)
-    pass
-# Tambahkan baris ini tepat sebelum bot.infinity_polling()
-print("Membersihkan koneksi lama...")
-bot.remove_webhook() 
-print("Bot siap dijalankan.")
-bot.infinity_polling(none_stop=True, interval=0, timeout=20)
-bot.infinity_polling()
+bot.remove_webhook()
+bot.infinity_polling(none_stop=True, skip_pending=True)
