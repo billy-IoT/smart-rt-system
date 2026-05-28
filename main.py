@@ -191,16 +191,37 @@ def handle_iuran(message):
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
     parts = call.data.split("_")
+    if len(parts) < 2: return
     action, uid = parts[0], parts[1]
+    
     if uid in pending_approvals:
         data = pending_approvals[uid]
+        
+        # Mengambil data dari dictionary agar bisa digunakan dalam f-string
+        nama_warga = data.get("nama", "Warga")
+        kategori_iuran = data.get("kategori", "Lain-lain")
+        jumlah_iuran = data.get("jumlah", 0)
+        
         if action == "approve":
-            kas_rt["total"] += data["jumlah"]
-            bot.send_message(uid, f"✅ Iuran telah disetujui, terimakasih {nama} karena telah melakukan pembayaran {kategori} sebesar {jumlah}")
-            bot.edit_message_caption(caption="✅ Iuran telah disetujui, Kas RT: Rp {kas_rt['total']:,}", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            kas_rt["total"] += jumlah_iuran
+            
+            # Pesan yang dikirim ke warga
+            bot.send_message(uid, f"✅ Iuran telah disetujui, terimakasih {nama_warga} karena telah melakukan pembayaran {kategori_iuran} sebesar Rp {jumlah_iuran:,}")
+            
+            # Update caption di chat Pak RT
+            bot.edit_message_caption(
+                caption=f"✅ Iuran disetujui.\nTotal Kas RT: Rp {kas_rt['total']:,}", 
+                chat_id=call.message.chat.id, 
+                message_id=call.message.message_id
+            )
         else:
             bot.send_message(uid, "❌ Iuran ditolak.")
-            bot.edit_message_caption(caption="❌ Iuran ditolak", chat_id=call.message.chat.id, message_id=call.message.message_id)
+            bot.edit_message_caption(
+                caption="❌ Iuran ditolak", 
+                chat_id=call.message.chat.id, 
+                message_id=call.message.message_id
+            )
+        
         del pending_approvals[uid]
 
 print("Bot Smart RT nyala...")
