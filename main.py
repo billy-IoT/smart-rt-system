@@ -384,5 +384,9 @@ def handle_iuran(message):
 def callback_handler(call):
     # (Kode callback kamu tetap di sini)
     pass
-
+# Tambahkan baris ini tepat sebelum bot.infinity_polling()
+print("Membersihkan koneksi lama...")
+bot.remove_webhook() 
+print("Bot siap dijalankan.")
+bot.infinity_polling(none_stop=True, interval=0, timeout=20)
 bot.infinity_polling()
