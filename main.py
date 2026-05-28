@@ -143,19 +143,34 @@ def main_handler(message):
             bot.reply_to(message, "❌ Hanya Pak RT yang bisa mengeluarkan perintah darurat.")
         return
 
-    # Fitur Lapor/Tag Anggota Bermasalah
-    # (Bot akan men-tag username dan mengirim notifikasi personal)
-    if "lapor" in text.lower() or "bermasalah" in text.lower():
+    # Lapor Warga Bermasalah dengan AI
+    if "lapor" in text.lower() or "parkir" in text.lower() or "bermasalah" in text.lower():
         mentioned = re.findall(r'@(\w+)', text)
         for username in mentioned:
             target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == username.lower()), None)
             if target_uid:
-                # Mengirim japri ke orang yang bermasalah
-                bot.send_message(target_uid, f"⚠️ Anda telah dilaporkan oleh warga terkait: {text}")
-                # Memberi tahu pelapor
-                bot.reply_to(message, f"✅ Laporan telah dikirim ke @{username} dan sudah di-tag sebagai anggota bermasalah.")
+                # 1. Minta AI buatkan pesan teguran berdasarkan isi laporan (text)
+                system_prompt_lapor = f"""Lu adalah asisten RT yang tegas. 
+                Buatlah pesan teguran untuk warga yang dilaporkan karena: '{text}'.
+                Aturan: Tegas, sopan tapi tidak basa-basi, jangan flirty. Langsung ke inti masalah."""
+                
+                try:
+                    res = client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=[{"role": "system", "content": system_prompt_lapor}, {"role": "user", "content": text}]
+                    )
+                    pesan_ai = res.choices[0].message.content
+                except:
+                    pesan_ai = f"⚠️ Anda telah dilaporkan oleh warga terkait: {text}"
+
+                # 2. Kirim pesan hasil olahan AI ke target
+                try:
+                    bot.send_message(target_uid, f"📢 Peringatan dari Smart RT:\n\n{pesan_ai}")
+                    bot.reply_to(message, f"✅ Laporan ke @{username} sudah dikirim dengan teguran.")
+                except:
+                    bot.reply_to(message, f"❌ Gagal kirim ke @{username}.")
             else:
-                bot.reply_to(message, f"❌ User @{username} tidak terdaftar.")
+                bot.reply_to(message, f"❌ User @{username} tidak ditemukan di database.")
     # AI Chat
     if is_bot_target(message):
         chat_history.setdefault(uid, []).append({"role": "user", "content": text})
