@@ -100,10 +100,29 @@ def main_handler(message):
             broadcast_message(text.replace("/bc ", ""))
             bot.reply_to(message, "✅ Broadcast terkirim.")
             return
+    
         if text.startswith("/mute "):
-            target = text.split(" ")[1].replace("@", "")
-            muted_users.add(target)
-            bot.reply_to(message, f"✅ @{target} dimute.")
+            # 1. Pastikan hanya bisa mute jika di Group
+            if message.chat.type == "private":
+                bot.reply_to(message, "⚠️ Fitur mute hanya berlaku di grup.")
+                return
+            
+            # 2. Ambil target
+            target_username = text.split(" ")[1].replace("@", "")
+            
+            # 3. Cari target di database untuk mendapatkan UID
+            target_uid = next((u for u, data in warga_database.items() if data.get("username", "").lower() == target_username.lower()), None)
+            
+            # 4. Pastikan Pak RT tidak bisa me-mute dirinya sendiri
+            if str(target_uid) == ADMIN_ID:
+                bot.reply_to(message, "❌ Tidak bisa me-mute diri sendiri.")
+                return
+
+            if target_uid:
+                muted_users.add(target_uid) # Mute berdasarkan UID, bukan username
+                bot.reply_to(message, f"✅ @{target_username} telah dimute di grup ini.")
+            else:
+                bot.reply_to(message, f"❌ User @{target_username} tidak ditemukan.")
             return
 
     # Anti Spam
