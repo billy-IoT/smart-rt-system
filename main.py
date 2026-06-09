@@ -51,12 +51,8 @@ class EventType(str, Enum):
     BROADCAST_CREATED = "BROADCAST_CREATED"
 
 class SATRIAException(Exception): pass
-class ValidationException(SATRIAException): pass
-class AuthorizationException(SATRIAException): pass
-class RepositoryException(SATRIAException): pass
-class ServiceException(SATRIAException): pass
 class AIException(SATRIAException): pass
-class SessionException(SATRIAException): pass
+class ServiceException(SATRIAException): pass
 
 class Clock:
     @staticmethod
@@ -175,8 +171,6 @@ class Repository(ABC, Generic[T, K]):
     @abstractmethod
     def find_by_id(self, key: K) -> Optional[T]: pass
     @abstractmethod
-    def delete(self, key: K) -> bool: pass
-    @abstractmethod
     def find_all(self) -> List[T]: pass
 
 class Service(ABC):
@@ -198,7 +192,6 @@ class ApplicationContext:
 context = ApplicationContext(BOT_TOKEN, GROQ_API_KEY, ADMIN_ID, CHAT_ID_GRUP, Clock.now(), IdGenerator.generate())
 bot = telebot.TeleBot(BOT_TOKEN)
 groq_client = Groq(api_key=GROQ_API_KEY)
-
 kas_summary = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
 
 class InMemoryRepository(Repository[T, str], Generic[T]):
@@ -212,18 +205,19 @@ class InMemoryRepository(Repository[T, str], Generic[T]):
             return entity
     def find_by_id(self, key: str) -> Optional[T]:
         with self._lock: return self._storage.get(key)
-    def delete(self, key: str) -> bool:
-        with self._lock: return self._storage.pop(key, None) is not None
     def find_all(self) -> List[T]:
         with self._lock: return list(self._storage.values())
-    def count(self) -> int:
-        with self._lock: return len(self._storage)
 
 class UserRepository(InMemoryRepository[User]):
     def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
         with self._lock:
             for user in self._storage.values():
                 if user.telegram_id == telegram_id: return user
+        return None
+    def find_by_username(self, username: str) -> Optional[User]:
+        with self._lock:
+            for user in self._storage.values():
+                if user.username and user.username.lower() == username.lower(): return user
         return None
 
 class ReportRepository(InMemoryRepository[CitizenReport]): pass
@@ -246,11 +240,6 @@ class SessionManager:
             return self._sessions[user_id]
     def remove(self, user_id: str) -> None:
         with self._lock: self._sessions.pop(user_id, None)
-    def update_state(self, user_id: str, state: SessionState) -> None:
-        with self._lock:
-            session = self.get(user_id)
-            session.state = state
-            session.updated_at = Clock.now()
 
 class ChatHistoryStore:
     def __init__(self) -> None:
@@ -298,14 +287,12 @@ class QueueManager:
             worker = threading.Thread(target=self._run, daemon=True, name=f"worker-{index}")
             worker.start()
             self._workers.append(worker)
-    def stop(self) -> None: self._running = False
     def submit(self, task: QueueTask) -> None: self._queue.put(task)
     def _run(self) -> None:
         while self._running:
             try:
                 task = self._queue.get(timeout=1)
                 task.callback(task.payload)
-            except queue.Empty: continue
             except: continue
 
 class MetricsCollector:
@@ -314,16 +301,11 @@ class MetricsCollector:
         self._lock = threading.RLock()
     def increment(self, metric: str, value: int = 1) -> None:
         with self._lock: self._metrics[metric] = self._metrics.get(metric, 0) + value
-    def get(self, metric: str) -> int:
-        with self._lock: return self._metrics.get(metric, 0)
 
 class Container:
     def __init__(self) -> None: self._services: Dict[str, Any] = {}
     def register(self, name: str, service: Any) -> None: self._services[name] = service
-    def resolve(self, name: str) -> Any:
-        service = self._services.get(name)
-        if service is None: raise ServiceException(f"{name} not found")
-        return service
+    def resolve(self, name: str) -> Any: return self._services.get(name)
 
 users_repository = UserRepository()
 reports_repository = ReportRepository()
@@ -338,7 +320,6 @@ metrics = MetricsCollector()
 container = Container()
 
 queue_manager.start(workers=4)
-
 container.register("users_repository", users_repository)
 container.register("reports_repository", reports_repository)
 container.register("kas_repository", kas_repository)
@@ -358,7 +339,6 @@ class UserService(Service):
         if existing: return existing
         user = User(IdGenerator.generate(), dto.telegram_id, dto.full_name, dto.username or "", RoleHelper.get_role(dto.telegram_id), Clock.now())
         self._repository.save(user)
-        event_bus.publish(EventType.USER_REGISTERED.value, user)
         return user
 
 class AIService(Service):
@@ -366,7 +346,7 @@ class AIService(Service):
     def name(self) -> str: return "ai_service"
     def ask(self, user: User, prompt: str) -> str:
         history = self._history.get_history(user.telegram_id)
-        messages = [{"role": "system", "content": f"Nama Bot: {BOT_NAME}\nNama User: {user.full_name}\nRole User: {user.role.value}\nBerbicara santai. Jawab singkat."}]
+        messages = [{"role": "system", "content": f"Nama Bot: {BOT_NAME}\nUser: {user.full_name}\nRole: {user.role.value}\nSantai dan singkat."}]
         for item in history: messages.append({"role": item.role, "content": item.content})
         messages.append({"role": "user", "content": prompt})
         try:
@@ -374,9 +354,8 @@ class AIService(Service):
             answer = response.choices[0].message.content
             self._history.add_message(user.telegram_id, "user", prompt)
             self._history.add_message(user.telegram_id, "assistant", answer)
-            metrics.increment("ai_requests")
             return answer
-        except Exception as exc: raise AIException(str(exc))
+        except: return "⚠️ AI Error."
 
 class ReportService(Service):
     def __init__(self, repository: ReportRepository) -> None: self._repository = repository
@@ -384,8 +363,6 @@ class ReportService(Service):
     def create(self, dto: CreateReportDTO) -> CitizenReport:
         report = CitizenReport(IdGenerator.generate(), dto.user_id, dto.report_type, dto.content, ApprovalStatus.PENDING, Clock.now())
         self._repository.save(report)
-        event_bus.publish(EventType.REPORT_CREATED.value, report)
-        metrics.increment("reports_created")
         return report
 
 class KasService(Service):
@@ -394,10 +371,7 @@ class KasService(Service):
     def submit(self, dto: CreateKasDTO) -> KasTransaction:
         transaction = KasTransaction(IdGenerator.generate(), dto.user_id, dto.full_name, dto.category, dto.description, dto.amount, ApprovalStatus.PENDING, dto.photo_file_id, Clock.now())
         self._repository.save(transaction)
-        approval = ApprovalRequest(IdGenerator.generate(), transaction.id, dto.user_id, "KAS", Clock.now())
-        approval_repository.save(approval)
-        event_bus.publish(EventType.PAYMENT_SUBMITTED.value, transaction)
-        metrics.increment("kas_submitted")
+        approval_repository.save(ApprovalRequest(IdGenerator.generate(), transaction.id, dto.user_id, "KAS", Clock.now()))
         return transaction
 
 class ApprovalService(Service):
@@ -410,21 +384,13 @@ class ApprovalService(Service):
         self._kas_repo.save(trx)
         kas_summary["total"] += trx.amount
         kas_summary[trx.category] += trx.amount
-        event_bus.publish(EventType.APPROVAL_APPROVED.value, trx)
         return trx
     def reject(self, transaction_id: str) -> Optional[KasTransaction]:
         trx = self._kas_repo.find_by_id(transaction_id)
         if not trx: return None
         trx.status = ApprovalStatus.REJECTED
         self._kas_repo.save(trx)
-        event_bus.publish(EventType.APPROVAL_REJECTED.value, trx)
         return trx
-
-class NotificationService(Service):
-    def name(self) -> str: return "notification_service"
-    def send(self, user_id: str, text: str) -> None:
-        try: bot.send_message(user_id, text)
-        except: pass
 
 class BroadcastService(Service):
     def __init__(self, repository: BroadcastRepository) -> None: self._repository = repository
@@ -435,7 +401,6 @@ class BroadcastService(Service):
         for user in users_repository.find_all():
             task = QueueTask(IdGenerator.generate(), "broadcast", (user.telegram_id, dto.message), self._send_worker)
             queue_manager.submit(task)
-        event_bus.publish(EventType.BROADCAST_CREATED.value, message)
     def _send_worker(self, payload: Any) -> None:
         user_id, text = payload
         try: bot.send_message(user_id, f"📢 {text}")
@@ -460,18 +425,9 @@ ai_service = AIService(history_store)
 report_service = ReportService(reports_repository)
 kas_service = KasService(kas_repository)
 approval_service = ApprovalService(kas_repository)
-notification_service = NotificationService()
 broadcast_service = BroadcastService(broadcast_repository)
 spam_service = SpamProtectionService()
-
-container.register("user_service", user_service)
-container.register("ai_service", ai_service)
-container.register("report_service", report_service)
-container.register("kas_service", kas_service)
-container.register("approval_service", approval_service)
-container.register("notification_service", notification_service)
-container.register("broadcast_service", broadcast_service)
-container.register("spam_service", spam_service)
+notification_service = type('NotificationService', (Service,), {'name': lambda self: 'notification', 'send': lambda self, u, t: bot.send_message(u, t)})()
 
 def is_admin(user_id: str) -> bool: return str(user_id) == str(ADMIN_ID)
 def is_bot_target(message) -> bool:
@@ -487,12 +443,6 @@ def register_user_from_message(message) -> User:
     telegram_id = str(message.from_user.id)
     dto = RegisterUserDTO(telegram_id, message.from_user.first_name or "Warga", message.from_user.username or "")
     return user_service.register_user(dto)
-
-def start_iuran_flow(message) -> None:
-    user_id = str(message.from_user.id)
-    session = session_manager.get(user_id)
-    session.state = SessionState.WAITING_NAME
-    bot.reply_to(message, "Masukkan nama lengkap:")
 
 def process_iuran_flow(message) -> bool:
     user_id = str(message.from_user.id)
@@ -551,32 +501,10 @@ def callback_handler(call):
     except: return
     if action == "approve":
         trx = approval_service.approve(trx_id)
-        if trx:
-            bot.send_message(trx.user_id, "✅ Iuran disetujui.")
-            bot.answer_callback_query(call.id, "Approved")
+        if trx: bot.send_message(trx.user_id, "✅ Iuran disetujui."); bot.answer_callback_query(call.id, "Approved")
     elif action == "reject":
         trx = approval_service.reject(trx_id)
-        if trx:
-            bot.send_message(trx.user_id, "❌ Iuran ditolak.")
-            bot.answer_callback_query(call.id, "Rejected")
-
-@bot.message_handler(commands=["start"])
-def start_command(message):
-    user = register_user_from_message(message)
-    bot.reply_to(message, f"Selamat {GreetingHelper.greeting()}, {user.full_name}\n\n{BOT_NAME} siap membantu.")
-
-@bot.message_handler(commands=["kas"])
-def kas_command(message):
-    bot.reply_to(message, f"💰 Kas RT\n\nTotal : Rp{kas_summary['total']:,}\nKebersihan : Rp{kas_summary['Kebersihan']:,}\nKeamanan : Rp{kas_summary['Keamanan']:,}\nLain-lain : Rp{kas_summary['Lain-lain']:,}")
-
-@bot.message_handler(commands=["laporan"])
-def laporan_command(message):
-    if not is_admin(message.from_user.id): return
-    reports = reports_repository.find_all()
-    if not reports: bot.reply_to(message, "Belum ada laporan."); return
-    text = "📋 Daftar Laporan\n\n"
-    for item in reports[-20:]: text += f"- {item.content}\n"
-    bot.send_message(message.chat.id, text)
+        if trx: bot.send_message(trx.user_id, "❌ Iuran ditolak."); bot.answer_callback_query(call.id, "Rejected")
 
 @bot.message_handler(content_types=["text", "photo"])
 def main_handler(message):
@@ -585,7 +513,7 @@ def main_handler(message):
     if not spam_service.validate(user_id): bot.reply_to(message, "⚠️ Terlalu banyak pesan."); return
     if process_iuran_flow(message): return
     text = message.text or message.caption or ""
-    if text == "💰 Lapor Iuran": start_iuran_flow(message); return
+    if text == "💰 Lapor Iuran": session_manager.get(user_id).state = SessionState.WAITING_NAME; bot.reply_to(message, "Nama Lengkap?"); return
     lower = text.lower()
     if any(key in lower for key in ["lapor", "keluhan", "bermasalah", "parkir"]):
         report = report_service.create(CreateReportDTO(user_id, ReportType.LAPORAN, text))
@@ -593,6 +521,12 @@ def main_handler(message):
         if CHAT_ID_GRUP:
             try: bot.send_message(CHAT_ID_GRUP, f"📢 Laporan Warga\n\n{report.content}")
             except: pass
+        usernames = re.findall(r'@(\w+)', text)
+        for u in usernames:
+            target = users_repository.find_by_username(u)
+            if target:
+                ai_notif = ai_service.ask(target, f"Buatkan pesan notifikasi sopan kepada {target.full_name} bahwa mereka disebut dalam laporan warga terkait: {text}")
+                notification_service.send(target.telegram_id, ai_notif)
         return
     if text.startswith("/bc ") and is_admin(user_id):
         broadcast_service.broadcast(BroadcastDTO(user_id, text.replace("/bc ", "")))
@@ -601,12 +535,8 @@ def main_handler(message):
     if not is_bot_target(message): return
     try:
         user = users_repository.find_by_telegram_id(user_id)
-        answer = ai_service.ask(user, text)
-        bot.reply_to(message, answer)
-        metrics.increment("messages_processed")
-    except: bot.reply_to(message, "⚠️ AI sedang bermasalah.")
+        bot.reply_to(message, ai_service.ask(user, text))
+    except: bot.reply_to(message, "⚠️ AI Error.")
 
-print(f"{BOT_NAME} started")
-print(f"Application ID: {context.application_id}")
-bot.remove_webhook()
 bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
+``` 🗿
