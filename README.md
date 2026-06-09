@@ -1,21 +1,21 @@
-# Smart RT Monitoring System 🏠
+# Smart RT Monitoring System 
 
 Sistem terintegrasi untuk pemantauan ketertiban parkir RT dan transparansi keuangan menggunakan AI (YOLOv8) dan Telegram Bot.
 
-## 🚀 Fitur Utama
+##  Fitur Utama
 - **IoT Monitoring:** Deteksi kendaraan menggunakan ESP32-CAM & AI (YOLOv8).
 - **Automation:** Notifikasi otomatis ke Telegram warga jika terjadi pelanggaran.
 - **Finance Transparency:** Integrasi Google Sheets untuk pelaporan kas RT.
 - **Security:** *Environment-based configuration* untuk melindungi API Key.
 
-## 🛠️ Tech Stack
+## Tech Stack
 - **Language:** Python
 - **Framework:** python-telegram-bot, Flask
 - **IoT:** ESP32-CAM, YOLOv8 (Inference)
 - **Deployment:** Railway / Render
 - **Database:** Google Sheets API
 
-## 📋 Cara Menjalankan (Development)
+## Cara Menjalankan (Development)
 
 1. Clone repositori ini:
    `git clone https://github.com/username/smart-rt-system.git`
