@@ -539,4 +539,4 @@ def main_handler(message):
     except: bot.reply_to(message, "⚠️ AI Error.")
 
 bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
-``` 🗿
+
