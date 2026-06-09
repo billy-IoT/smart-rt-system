@@ -1,200 +1,612 @@
-import os
-import re
+from __future__ import annotations
+import os, re, time, json, uuid, queue, pytz, threading, datetime
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Any, Dict, List, Optional, Callable, Generic, TypeVar, Protocol
+from dataclasses import dataclass, field
 import telebot
-import datetime
-import pytz
-import threading
-import queue
-import logging
 from telebot import types
-from groq import Groq, BadRequestError, RateLimitError
+from groq import Groq
 
-# =========================================
-# CONFIG & LOGGING
-# =========================================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+ADMIN_ID = str(os.getenv("ADMIN_ID", ""))
+CHAT_ID_GRUP = str(os.getenv("CHAT_ID_GRUP", ""))
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-ADMIN_ID = str(os.getenv("ADMIN_ID"))
-CHAT_ID_GRUP = os.getenv("CHAT_ID_GRUP")
+BOT_NAME = "SATRIA (Sistem Tanggap RT Ih Asique)"
+TIMEZONE = "Asia/Jakarta"
 
+MAX_CHAT_HISTORY = 10
+MAX_SPAM_MESSAGES = 10
+SPAM_WINDOW_SECONDS = 60
+
+class UserRole(str, Enum):
+    WARGA = "WARGA"
+    ADMIN = "ADMIN"
+
+class ApprovalStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+class ReportType(str, Enum):
+    LAPORAN = "LAPORAN"
+    KELUHAN = "KELUHAN"
+    DARURAT = "DARURAT"
+
+class SessionState(str, Enum):
+    NONE = "NONE"
+    WAITING_NAME = "WAITING_NAME"
+    WAITING_CATEGORY = "WAITING_CATEGORY"
+    WAITING_DESC = "WAITING_DESC"
+    WAITING_AMOUNT = "WAITING_AMOUNT"
+    WAITING_PHOTO = "WAITING_PHOTO"
+
+class EventType(str, Enum):
+    USER_REGISTERED = "USER_REGISTERED"
+    REPORT_CREATED = "REPORT_CREATED"
+    PAYMENT_SUBMITTED = "PAYMENT_SUBMITTED"
+    APPROVAL_APPROVED = "APPROVAL_APPROVED"
+    APPROVAL_REJECTED = "APPROVAL_REJECTED"
+    BROADCAST_CREATED = "BROADCAST_CREATED"
+
+class SATRIAException(Exception): pass
+class ValidationException(SATRIAException): pass
+class AuthorizationException(SATRIAException): pass
+class RepositoryException(SATRIAException): pass
+class ServiceException(SATRIAException): pass
+class AIException(SATRIAException): pass
+class SessionException(SATRIAException): pass
+
+class Clock:
+    @staticmethod
+    def now() -> datetime.datetime:
+        return datetime.datetime.now(pytz.timezone(TIMEZONE))
+
+class IdGenerator:
+    @staticmethod
+    def generate() -> str:
+        return str(uuid.uuid4())
+
+class RoleHelper:
+    @staticmethod
+    def get_role(user_id: str) -> UserRole:
+        return UserRole.ADMIN if str(user_id) == str(ADMIN_ID) else UserRole.WARGA
+
+class GreetingHelper:
+    @staticmethod
+    def greeting() -> str:
+        hour = Clock.now().hour
+        if 5 <= hour < 12: return "Pagi"
+        if 12 <= hour < 15: return "Siang"
+        if 15 <= hour < 18: return "Sore"
+        return "Malam"
+
+@dataclass(slots=True)
+class User:
+    id: str
+    telegram_id: str
+    full_name: str
+    username: str
+    role: UserRole
+    created_at: datetime.datetime
+
+@dataclass(slots=True)
+class ChatMessage:
+    role: str
+    content: str
+    created_at: datetime.datetime
+
+@dataclass(slots=True)
+class CitizenReport:
+    id: str
+    user_id: str
+    report_type: ReportType
+    content: str
+    status: ApprovalStatus
+    created_at: datetime.datetime
+
+@dataclass(slots=True)
+class KasTransaction:
+    id: str
+    user_id: str
+    full_name: str
+    category: str
+    description: str
+    amount: int
+    status: ApprovalStatus
+    photo_file_id: str
+    created_at: datetime.datetime
+
+@dataclass(slots=True)
+class BroadcastMessage:
+    id: str
+    sender_id: str
+    message: str
+    created_at: datetime.datetime
+
+@dataclass(slots=True)
+class ApprovalRequest:
+    id: str
+    target_id: str
+    requester_id: str
+    approval_type: str
+    created_at: datetime.datetime
+
+@dataclass(slots=True)
+class UserSession:
+    user_id: str
+    state: SessionState
+    data: Dict[str, Any] = field(default_factory=dict)
+    updated_at: datetime.datetime = field(default_factory=Clock.now)
+
+@dataclass(slots=True)
+class RegisterUserDTO:
+    telegram_id: str
+    full_name: str
+    username: str
+
+@dataclass(slots=True)
+class CreateReportDTO:
+    user_id: str
+    report_type: ReportType
+    content: str
+
+@dataclass(slots=True)
+class CreateKasDTO:
+    user_id: str
+    full_name: str
+    category: str
+    description: str
+    amount: int
+    photo_file_id: str
+
+@dataclass(slots=True)
+class BroadcastDTO:
+    sender_id: str
+    message: str
+
+T = TypeVar("T")
+K = TypeVar("K")
+
+class Repository(ABC, Generic[T, K]):
+    @abstractmethod
+    def save(self, entity: T) -> T: pass
+    @abstractmethod
+    def find_by_id(self, key: K) -> Optional[T]: pass
+    @abstractmethod
+    def delete(self, key: K) -> bool: pass
+    @abstractmethod
+    def find_all(self) -> List[T]: pass
+
+class Service(ABC):
+    @abstractmethod
+    def name(self) -> str: pass
+
+class EventHandler(Protocol):
+    def __call__(self, payload: Any) -> None: ...
+
+@dataclass(slots=True)
+class ApplicationContext:
+    bot_token: str
+    groq_api_key: str
+    admin_id: str
+    group_id: str
+    started_at: datetime.datetime
+    application_id: str
+
+context = ApplicationContext(BOT_TOKEN, GROQ_API_KEY, ADMIN_ID, CHAT_ID_GRUP, Clock.now(), IdGenerator.generate())
 bot = telebot.TeleBot(BOT_TOKEN)
-client = Groq(api_key=GROQ_API_KEY)
-bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# =========================================
-# DATABASE & STATE
-# =========================================
-kas_rt = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
-laporan_warga = []
-warga_database = {}
-user_states = {}
-pending_approvals = {}
-spam_counter = {}
+kas_summary = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
 
-# =========================================
-# QUEUE & WORKER
-# =========================================
-task_queue = queue.Queue()
+class InMemoryRepository(Repository[T, str], Generic[T]):
+    def __init__(self) -> None:
+        self._storage: Dict[str, T] = {}
+        self._lock = threading.RLock()
+    def save(self, entity: T) -> T:
+        with self._lock:
+            entity_id = getattr(entity, "id")
+            self._storage[entity_id] = entity
+            return entity
+    def find_by_id(self, key: str) -> Optional[T]:
+        with self._lock: return self._storage.get(key)
+    def delete(self, key: str) -> bool:
+        with self._lock: return self._storage.pop(key, None) is not None
+    def find_all(self) -> List[T]:
+        with self._lock: return list(self._storage.values())
+    def count(self) -> int:
+        with self._lock: return len(self._storage)
 
-def worker():
-    logging.info("Worker thread active.")
-    while True:
-        task = task_queue.get()
+class UserRepository(InMemoryRepository[User]):
+    def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
+        with self._lock:
+            for user in self._storage.values():
+                if user.telegram_id == telegram_id: return user
+        return None
+
+class ReportRepository(InMemoryRepository[CitizenReport]): pass
+class KasRepository(InMemoryRepository[KasTransaction]): pass
+class BroadcastRepository(InMemoryRepository[BroadcastMessage]): pass
+class ApprovalRepository(InMemoryRepository[ApprovalRequest]): pass
+
+class SessionManager:
+    def __init__(self) -> None:
+        self._sessions: Dict[str, UserSession] = {}
+        self._lock = threading.RLock()
+    def create(self, user_id: str) -> UserSession:
+        with self._lock:
+            session = UserSession(user_id=user_id, state=SessionState.NONE)
+            self._sessions[user_id] = session
+            return session
+    def get(self, user_id: str) -> UserSession:
+        with self._lock:
+            if user_id not in self._sessions: return self.create(user_id)
+            return self._sessions[user_id]
+    def remove(self, user_id: str) -> None:
+        with self._lock: self._sessions.pop(user_id, None)
+    def update_state(self, user_id: str, state: SessionState) -> None:
+        with self._lock:
+            session = self.get(user_id)
+            session.state = state
+            session.updated_at = Clock.now()
+
+class ChatHistoryStore:
+    def __init__(self) -> None:
+        self._storage: Dict[str, List[ChatMessage]] = {}
+        self._lock = threading.RLock()
+    def add_message(self, user_id: str, role: str, content: str) -> None:
+        with self._lock:
+            self._storage.setdefault(user_id, [])
+            self._storage[user_id].append(ChatMessage(role, content, Clock.now()))
+            self._storage[user_id] = self._storage[user_id][-MAX_CHAT_HISTORY:]
+    def get_history(self, user_id: str) -> List[ChatMessage]:
+        with self._lock: return list(self._storage.get(user_id, []))
+
+class EventBus:
+    def __init__(self) -> None:
+        self._subscribers: Dict[str, List[EventHandler]] = {}
+        self._lock = threading.RLock()
+    def subscribe(self, event_name: str, handler: EventHandler) -> None:
+        with self._lock:
+            self._subscribers.setdefault(event_name, [])
+            self._subscribers[event_name].append(handler)
+    def publish(self, event_name: str, payload: Any) -> None:
+        handlers = []
+        with self._lock: handlers = list(self._subscribers.get(event_name, []))
+        for handler in handlers:
+            try: handler(payload)
+            except: pass
+
+@dataclass(slots=True)
+class QueueTask:
+    task_id: str
+    task_name: str
+    payload: Any
+    callback: Callable[[Any], None]
+
+class QueueManager:
+    def __init__(self) -> None:
+        self._queue = queue.Queue()
+        self._running = False
+        self._workers: List[threading.Thread] = []
+    def start(self, workers: int = 2) -> None:
+        if self._running: return
+        self._running = True
+        for index in range(workers):
+            worker = threading.Thread(target=self._run, daemon=True, name=f"worker-{index}")
+            worker.start()
+            self._workers.append(worker)
+    def stop(self) -> None: self._running = False
+    def submit(self, task: QueueTask) -> None: self._queue.put(task)
+    def _run(self) -> None:
+        while self._running:
+            try:
+                task = self._queue.get(timeout=1)
+                task.callback(task.payload)
+            except queue.Empty: continue
+            except: continue
+
+class MetricsCollector:
+    def __init__(self) -> None:
+        self._metrics: Dict[str, int] = {}
+        self._lock = threading.RLock()
+    def increment(self, metric: str, value: int = 1) -> None:
+        with self._lock: self._metrics[metric] = self._metrics.get(metric, 0) + value
+    def get(self, metric: str) -> int:
+        with self._lock: return self._metrics.get(metric, 0)
+
+class Container:
+    def __init__(self) -> None: self._services: Dict[str, Any] = {}
+    def register(self, name: str, service: Any) -> None: self._services[name] = service
+    def resolve(self, name: str) -> Any:
+        service = self._services.get(name)
+        if service is None: raise ServiceException(f"{name} not found")
+        return service
+
+users_repository = UserRepository()
+reports_repository = ReportRepository()
+kas_repository = KasRepository()
+approval_repository = ApprovalRepository()
+broadcast_repository = BroadcastRepository()
+session_manager = SessionManager()
+history_store = ChatHistoryStore()
+event_bus = EventBus()
+queue_manager = QueueManager()
+metrics = MetricsCollector()
+container = Container()
+
+queue_manager.start(workers=4)
+
+container.register("users_repository", users_repository)
+container.register("reports_repository", reports_repository)
+container.register("kas_repository", kas_repository)
+container.register("approval_repository", approval_repository)
+container.register("broadcast_repository", broadcast_repository)
+container.register("session_manager", session_manager)
+container.register("history_store", history_store)
+container.register("event_bus", event_bus)
+container.register("queue_manager", queue_manager)
+container.register("metrics", metrics)
+
+class UserService(Service):
+    def __init__(self, repository: UserRepository) -> None: self._repository = repository
+    def name(self) -> str: return "user_service"
+    def register_user(self, dto: RegisterUserDTO) -> User:
+        existing = self._repository.find_by_telegram_id(dto.telegram_id)
+        if existing: return existing
+        user = User(IdGenerator.generate(), dto.telegram_id, dto.full_name, dto.username or "", RoleHelper.get_role(dto.telegram_id), Clock.now())
+        self._repository.save(user)
+        event_bus.publish(EventType.USER_REGISTERED.value, user)
+        return user
+
+class AIService(Service):
+    def __init__(self, history: ChatHistoryStore) -> None: self._history = history
+    def name(self) -> str: return "ai_service"
+    def ask(self, user: User, prompt: str) -> str:
+        history = self._history.get_history(user.telegram_id)
+        messages = [{"role": "system", "content": f"Nama Bot: {BOT_NAME}\nNama User: {user.full_name}\nRole User: {user.role.value}\nBerbicara santai. Jawab singkat."}]
+        for item in history: messages.append({"role": item.role, "content": item.content})
+        messages.append({"role": "user", "content": prompt})
         try:
-            ans = get_ai_response(task['uid'], task['text'], task['role'], task['is_lapor'])
-            dispatch_laporan(task, ans)
-        except Exception as e:
-            logging.error(f"Worker Runtime Error: {e}")
-        finally:
-            task_queue.task_done()
+            response = groq_client.chat.completions.create(model="llama-3.1-8b-instant", messages=messages)
+            answer = response.choices[0].message.content
+            self._history.add_message(user.telegram_id, "user", prompt)
+            self._history.add_message(user.telegram_id, "assistant", answer)
+            metrics.increment("ai_requests")
+            return answer
+        except Exception as exc: raise AIException(str(exc))
 
-def dispatch_laporan(task, response_text):
-    # A. Reply ke pelapor
-    try: bot.reply_to(task['message'], response_text)
-    except: pass
+class ReportService(Service):
+    def __init__(self, repository: ReportRepository) -> None: self._repository = repository
+    def name(self) -> str: return "report_service"
+    def create(self, dto: CreateReportDTO) -> CitizenReport:
+        report = CitizenReport(IdGenerator.generate(), dto.user_id, dto.report_type, dto.content, ApprovalStatus.PENDING, Clock.now())
+        self._repository.save(report)
+        event_bus.publish(EventType.REPORT_CREATED.value, report)
+        metrics.increment("reports_created")
+        return report
 
-    # B. Broadcast ke Grup & Japri Target
-    if task['is_lapor'] and CHAT_ID_GRUP:
-        # Kirim ke grup jika bukan dari grup itu sendiri
-        if str(task['message'].chat.id) != str(CHAT_ID_GRUP):
-            try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\n{response_text}")
-            except: pass
-        
-        # C. Japri ke yang di-tag (@username)
-        usernames = re.findall(r'@(\w+)', task['text'])
-        for username in usernames:
-            target_uid = next((u for u, d in warga_database.items() if d.get("username", "").lower() == username.lower()), None)
-            if target_uid:
-                try: bot.send_message(target_uid, f"📢 Teguran RT (Japri):\n\n{response_text}")
-                except: pass
+class KasService(Service):
+    def __init__(self, repository: KasRepository) -> None: self._repository = repository
+    def name(self) -> str: return "kas_service"
+    def submit(self, dto: CreateKasDTO) -> KasTransaction:
+        transaction = KasTransaction(IdGenerator.generate(), dto.user_id, dto.full_name, dto.category, dto.description, dto.amount, ApprovalStatus.PENDING, dto.photo_file_id, Clock.now())
+        self._repository.save(transaction)
+        approval = ApprovalRequest(IdGenerator.generate(), transaction.id, dto.user_id, "KAS", Clock.now())
+        approval_repository.save(approval)
+        event_bus.publish(EventType.PAYMENT_SUBMITTED.value, transaction)
+        metrics.increment("kas_submitted")
+        return transaction
 
-threading.Thread(target=worker, daemon=True).start()
+class ApprovalService(Service):
+    def __init__(self, kas_repo: KasRepository) -> None: self._kas_repo = kas_repo
+    def name(self) -> str: return "approval_service"
+    def approve(self, transaction_id: str) -> Optional[KasTransaction]:
+        trx = self._kas_repo.find_by_id(transaction_id)
+        if not trx: return None
+        trx.status = ApprovalStatus.APPROVED
+        self._kas_repo.save(trx)
+        kas_summary["total"] += trx.amount
+        kas_summary[trx.category] += trx.amount
+        event_bus.publish(EventType.APPROVAL_APPROVED.value, trx)
+        return trx
+    def reject(self, transaction_id: str) -> Optional[KasTransaction]:
+        trx = self._kas_repo.find_by_id(transaction_id)
+        if not trx: return None
+        trx.status = ApprovalStatus.REJECTED
+        self._kas_repo.save(trx)
+        event_bus.publish(EventType.APPROVAL_REJECTED.value, trx)
+        return trx
 
-# =========================================
-# HELPERS
-# =========================================
-def get_role(uid): return "Pak RT" if str(uid) == ADMIN_ID else "Warga"
+class NotificationService(Service):
+    def name(self) -> str: return "notification_service"
+    def send(self, user_id: str, text: str) -> None:
+        try: bot.send_message(user_id, text)
+        except: pass
 
-def is_bot_target(message):
-    # META AI STYLE:
+class BroadcastService(Service):
+    def __init__(self, repository: BroadcastRepository) -> None: self._repository = repository
+    def name(self) -> str: return "broadcast_service"
+    def broadcast(self, dto: BroadcastDTO) -> None:
+        message = BroadcastMessage(IdGenerator.generate(), dto.sender_id, dto.message, Clock.now())
+        self._repository.save(message)
+        for user in users_repository.find_all():
+            task = QueueTask(IdGenerator.generate(), "broadcast", (user.telegram_id, dto.message), self._send_worker)
+            queue_manager.submit(task)
+        event_bus.publish(EventType.BROADCAST_CREATED.value, message)
+    def _send_worker(self, payload: Any) -> None:
+        user_id, text = payload
+        try: bot.send_message(user_id, f"📢 {text}")
+        except: pass
+
+class SpamProtectionService(Service):
+    def __init__(self) -> None:
+        self._storage: Dict[str, List[float]] = {}
+        self._lock = threading.RLock()
+    def name(self) -> str: return "spam_service"
+    def validate(self, user_id: str) -> bool:
+        now = time.time()
+        with self._lock:
+            self._storage.setdefault(user_id, [])
+            records = self._storage[user_id]
+            records[:] = [x for x in records if now - x < SPAM_WINDOW_SECONDS]
+            records.append(now)
+            return len(records) <= MAX_SPAM_MESSAGES
+
+user_service = UserService(users_repository)
+ai_service = AIService(history_store)
+report_service = ReportService(reports_repository)
+kas_service = KasService(kas_repository)
+approval_service = ApprovalService(kas_repository)
+notification_service = NotificationService()
+broadcast_service = BroadcastService(broadcast_repository)
+spam_service = SpamProtectionService()
+
+container.register("user_service", user_service)
+container.register("ai_service", ai_service)
+container.register("report_service", report_service)
+container.register("kas_service", kas_service)
+container.register("approval_service", approval_service)
+container.register("notification_service", notification_service)
+container.register("broadcast_service", broadcast_service)
+container.register("spam_service", spam_service)
+
+def is_admin(user_id: str) -> bool: return str(user_id) == str(ADMIN_ID)
+def is_bot_target(message) -> bool:
     if message.chat.type == "private": return True
-    # Cek Mention
-    is_mention = message.text and f"@{bot.get_me().username}" in message.text
-    # Cek Reply
-    is_reply = message.reply_to_message and message.reply_to_message.from_user.id == bot.get_me().id
-    return is_mention or is_reply
-
-def get_ai_response(uid, text, role, is_lapor=False):
-    nama = warga_database.get(uid, {}).get("name", "Warga")
-    system_prompt = (f"Buat teguran singkat, tegas, dan mantap sebagai asisten RT. Masalah: {text}. Akhiri dengan: - {bot_name}" if is_lapor else f"{bot_name}. Nama: {nama}, Role: {role}. Chat santai.")
+    if message.reply_to_message and message.reply_to_message.from_user.is_bot: return True
     try:
-        res = client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}])
-        return res.choices[0].message.content
-    except: return f"⚠️ Gangguan AI."
+        username = bot.get_me().username
+        if message.text and f"@{username}" in message.text: return True
+    except: pass
+    return False
 
-def get_main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(types.KeyboardButton("💰 Lapor Iuran"))
-    return markup
+def register_user_from_message(message) -> User:
+    telegram_id = str(message.from_user.id)
+    dto = RegisterUserDTO(telegram_id, message.from_user.first_name or "Warga", message.from_user.username or "")
+    return user_service.register_user(dto)
 
-# =========================================
-# HANDLERS
-# =========================================
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, f"Halo! Saya {bot_name}. Siap bantu urusan RT.", reply_markup=get_main_menu())
+def start_iuran_flow(message) -> None:
+    user_id = str(message.from_user.id)
+    session = session_manager.get(user_id)
+    session.state = SessionState.WAITING_NAME
+    bot.reply_to(message, "Masukkan nama lengkap:")
 
-@bot.message_handler(content_types=['text', 'photo'])
-def main_handler(message):
-    uid = str(message.from_user.id)
-    text = message.text or message.caption or ""
-    warga_database.setdefault(uid, {"name": message.from_user.first_name, "username": message.from_user.username})
-
-    # Iuran State Machine
-    if uid in user_states: handle_iuran(message); return
-
-    # Spam Protection
-    spam_counter[uid] = spam_counter.get(uid, 0) + 1
-    if spam_counter[uid] > 10:
-        if message.chat.type in ['group', 'supergroup']:
-            try: bot.restrict_chat_member(message.chat.id, int(uid), until_date=datetime.datetime.now() + datetime.timedelta(minutes=5))
-            except: pass
-        spam_counter[uid] = 0; return
-
-    # Admin Logic
-    if get_role(uid) == "Pak RT":
-        if "laporan" in text.lower():
-            bot.reply_to(message, "📋 Daftar laporan:\n" + "\n".join(laporan_warga) if laporan_warga else "Kosong.")
-            return
-        if text.startswith("/bc "):
-            for u in warga_database:
-                try: bot.send_message(u, f"📢 Pengumuman RT\n\n{text.replace('/bc ', '')}")
-                except: pass
-            return
-
-    # Lapor Logic
-    if any(k in text.lower() for k in ["lapor", "parkir", "bermasalah"]):
-        laporan_warga.append(f"{message.from_user.first_name}: {text}")
-        task_queue.put({'type': 'ai_chat', 'uid': uid, 'text': text, 'role': get_role(uid), 'is_lapor': True, 'message': message})
-        bot.reply_to(message, "✅ Laporan terkirim.", reply_markup=get_main_menu())
-        return
-
-    # Menu Iuran
-    if text == "💰 Lapor Iuran":
-        user_states[uid] = {"state": "WAITING_NAME"}
-        bot.reply_to(message, "Masukin nama lengkap:")
-        return
-
-    # AI Chat (Meta AI Style)
-    if is_bot_target(message):
-        task_queue.put({'type': 'ai_chat', 'uid': uid, 'text': text, 'role': get_role(uid), 'is_lapor': False, 'message': message})
-
-# =========================================
-# IURAN FLOW (ASLI)
-# =========================================
-def handle_iuran(message):
-    uid = str(message.from_user.id)
-    state_data = user_states[uid]
-    state = state_data["state"]
-    if state == "WAITING_NAME":
-        state_data["nama"] = message.text; state_data["state"] = "WAITING_CATEGORY"
-        bot.reply_to(message, "Pilih kategori:\n1. Kebersihan\n2. Keamanan\n3. Lain-lain")
-    elif state == "WAITING_CATEGORY":
-        cat_map = {"1": "Kebersihan", "2": "Keamanan", "3": "Lain-lain"}
-        if message.text in cat_map:
-            state_data["kategori"] = cat_map[message.text]
-            state_data["state"] = "WAITING_DESC" if message.text == "3" else "WAITING_AMOUNT"
-            bot.reply_to(message, "Masukin keterangan:" if message.text == "3" else "Masukin nominal:")
-    elif state == "WAITING_DESC":
-        state_data["keterangan"] = message.text; state_data["state"] = "WAITING_AMOUNT"
-        bot.reply_to(message, "Masukin nominal:")
-    elif state == "WAITING_AMOUNT":
-        raw = re.sub(r'\D', '', message.text)
-        if raw.isdigit() and int(raw) >= 10000:
-            state_data["jumlah"] = int(raw); state_data["state"] = "WAITING_PHOTO"
-            bot.reply_to(message, "Kirim foto bukti transfer:")
-        else: bot.reply_to(message, "⚠️ Minimal Rp10.000")
-    elif state == "WAITING_PHOTO":
-        if message.photo:
-            pending_approvals[uid] = state_data
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve_{uid}"), types.InlineKeyboardButton("❌ Reject", callback_data=f"reject_{uid}"))
-            bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=f"💰 Iuran: {state_data['nama']}", reply_markup=markup)
-            bot.reply_to(message, "✅ Terkirim ke Pak RT.", reply_markup=get_main_menu()); del user_states[uid]
+def process_iuran_flow(message) -> bool:
+    user_id = str(message.from_user.id)
+    session = session_manager.get(user_id)
+    state = session.state
+    if state == SessionState.NONE: return False
+    if state == SessionState.WAITING_NAME:
+        session.data["full_name"] = message.text
+        session.state = SessionState.WAITING_CATEGORY
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("Kebersihan", "Keamanan", "Lain-lain")
+        bot.send_message(message.chat.id, "Pilih kategori:", reply_markup=markup)
+        return True
+    if state == SessionState.WAITING_CATEGORY:
+        session.data["category"] = message.text
+        if message.text == "Lain-lain":
+            session.state = SessionState.WAITING_DESC
+            bot.reply_to(message, "Masukkan keterangan:")
+        else:
+            session.data["description"] = "-"
+            session.state = SessionState.WAITING_AMOUNT
+            bot.reply_to(message, "Masukkan nominal:")
+        return True
+    if state == SessionState.WAITING_DESC:
+        session.data["description"] = message.text
+        session.state = SessionState.WAITING_AMOUNT
+        bot.reply_to(message, "Masukkan nominal:")
+        return True
+    if state == SessionState.WAITING_AMOUNT:
+        amount = re.sub(r"\D", "", message.text)
+        if not amount.isdigit():
+            bot.reply_to(message, "Nominal tidak valid.")
+            return True
+        session.data["amount"] = int(amount)
+        session.state = SessionState.WAITING_PHOTO
+        bot.reply_to(message, "Kirim foto bukti transfer.")
+        return True
+    if state == SessionState.WAITING_PHOTO:
+        if not message.photo:
+            bot.reply_to(message, "Kirim foto.")
+            return True
+        dto = CreateKasDTO(user_id, session.data["full_name"], session.data["category"], session.data["description"], session.data["amount"], message.photo[-1].file_id)
+        transaction = kas_service.submit(dto)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("✅ Approve", callback_data=f"approve:{transaction.id}"), types.InlineKeyboardButton("❌ Reject", callback_data=f"reject:{transaction.id}"))
+        try: bot.send_photo(ADMIN_ID, dto.photo_file_id, caption=f"💰 Iuran\nNama: {dto.full_name}\nKategori: {dto.category}\nJumlah: Rp{dto.amount:,}", reply_markup=markup)
+        except: pass
+        session_manager.remove(user_id)
+        bot.reply_to(message, "✅ Menunggu approval Pak RT.")
+        return True
+    return False
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    action, uid = call.data.split("_")
-    if uid in pending_approvals:
-        data = pending_approvals[uid]
-        if action == "approve":
-            kas_rt[data['kategori']] += data['jumlah']; kas_rt["total"] += data['jumlah']
-            bot.send_message(uid, "✅ Disetujui.")
-        else: bot.send_message(uid, "❌ Ditolak.")
-        del pending_approvals[uid]
+    try: action, trx_id = call.data.split(":")
+    except: return
+    if action == "approve":
+        trx = approval_service.approve(trx_id)
+        if trx:
+            bot.send_message(trx.user_id, "✅ Iuran disetujui.")
+            bot.answer_callback_query(call.id, "Approved")
+    elif action == "reject":
+        trx = approval_service.reject(trx_id)
+        if trx:
+            bot.send_message(trx.user_id, "❌ Iuran ditolak.")
+            bot.answer_callback_query(call.id, "Rejected")
 
-if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.infinity_polling(none_stop=True)
+@bot.message_handler(commands=["start"])
+def start_command(message):
+    user = register_user_from_message(message)
+    bot.reply_to(message, f"Selamat {GreetingHelper.greeting()}, {user.full_name}\n\n{BOT_NAME} siap membantu.")
+
+@bot.message_handler(commands=["kas"])
+def kas_command(message):
+    bot.reply_to(message, f"💰 Kas RT\n\nTotal : Rp{kas_summary['total']:,}\nKebersihan : Rp{kas_summary['Kebersihan']:,}\nKeamanan : Rp{kas_summary['Keamanan']:,}\nLain-lain : Rp{kas_summary['Lain-lain']:,}")
+
+@bot.message_handler(commands=["laporan"])
+def laporan_command(message):
+    if not is_admin(message.from_user.id): return
+    reports = reports_repository.find_all()
+    if not reports: bot.reply_to(message, "Belum ada laporan."); return
+    text = "📋 Daftar Laporan\n\n"
+    for item in reports[-20:]: text += f"- {item.content}\n"
+    bot.send_message(message.chat.id, text)
+
+@bot.message_handler(content_types=["text", "photo"])
+def main_handler(message):
+    register_user_from_message(message)
+    user_id = str(message.from_user.id)
+    if not spam_service.validate(user_id): bot.reply_to(message, "⚠️ Terlalu banyak pesan."); return
+    if process_iuran_flow(message): return
+    text = message.text or message.caption or ""
+    if text == "💰 Lapor Iuran": start_iuran_flow(message); return
+    lower = text.lower()
+    if any(key in lower for key in ["lapor", "keluhan", "bermasalah", "parkir"]):
+        report = report_service.create(CreateReportDTO(user_id, ReportType.LAPORAN, text))
+        bot.reply_to(message, "✅ Laporan diterima.")
+        if CHAT_ID_GRUP:
+            try: bot.send_message(CHAT_ID_GRUP, f"📢 Laporan Warga\n\n{report.content}")
+            except: pass
+        return
+    if text.startswith("/bc ") and is_admin(user_id):
+        broadcast_service.broadcast(BroadcastDTO(user_id, text.replace("/bc ", "")))
+        bot.reply_to(message, "📢 Broadcast dikirim.")
+        return
+    if not is_bot_target(message): return
+    try:
+        user = users_repository.find_by_telegram_id(user_id)
+        answer = ai_service.ask(user, text)
+        bot.reply_to(message, answer)
+        metrics.increment("messages_processed")
+    except: bot.reply_to(message, "⚠️ AI sedang bermasalah.")
+
+print(f"{BOT_NAME} started")
+print(f"Application ID: {context.application_id}")
+bot.remove_webhook()
+bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
