@@ -13,6 +13,7 @@ from groq import Groq, BadRequestError, RateLimitError
 # CONFIG & LOGGING
 # =========================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 ADMIN_ID = str(os.getenv("ADMIN_ID"))
@@ -23,18 +24,29 @@ client = Groq(api_key=GROQ_API_KEY)
 bot_name = "SATRIA (Sistem Tanggap RT Ih Asique)"
 
 # =========================================
-# QUEUE SYSTEM
+# DATABASE & STATE
+# =========================================
+kas_rt = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
+laporan_warga = []
+warga_database = {}
+user_states = {}
+pending_approvals = {}
+spam_counter = {}
+
+# =========================================
+# QUEUE & WORKER
 # =========================================
 task_queue = queue.Queue()
 
 def worker():
+    logging.info("Worker thread active.")
     while True:
         task = task_queue.get()
         try:
             ans = get_ai_response(task['uid'], task['text'], task['role'], task['is_lapor'])
             dispatch_laporan(task, ans)
         except Exception as e:
-            logging.error(f"Worker Error: {e}")
+            logging.error(f"Worker Runtime Error: {e}")
         finally:
             task_queue.task_done()
 
@@ -43,8 +55,9 @@ def dispatch_laporan(task, response_text):
     try: bot.reply_to(task['message'], response_text)
     except: pass
 
-    # B. Broadcast ke Grup
+    # B. Broadcast ke Grup & Japri Target
     if task['is_lapor'] and CHAT_ID_GRUP:
+        # Kirim ke grup jika bukan dari grup itu sendiri
         if str(task['message'].chat.id) != str(CHAT_ID_GRUP):
             try: bot.send_message(CHAT_ID_GRUP, f"📢 [LAPORAN WARGA]\n\n{response_text}")
             except: pass
@@ -60,29 +73,18 @@ def dispatch_laporan(task, response_text):
 threading.Thread(target=worker, daemon=True).start()
 
 # =========================================
-# DATABASE & STATE
-# =========================================
-kas_rt = {"total": 0, "Kebersihan": 0, "Keamanan": 0, "Lain-lain": 0}
-laporan_warga = []
-warga_database = {}
-user_states = {}
-pending_approvals = {}
-chat_history = {}
-spam_counter = {}
-
-# =========================================
 # HELPERS
 # =========================================
 def get_role(uid): return "Pak RT" if str(uid) == ADMIN_ID else "Warga"
-def get_greeting():
-    hour = datetime.datetime.now(pytz.timezone("Asia/Jakarta")).hour
-    if 5 <= hour < 12: return "Pagi"
-    if 12 <= hour < 15: return "Siang"
-    if 15 <= hour < 18: return "Sore"
-    return "Malam"
 
 def is_bot_target(message):
-    return message.chat.type == "private" or (message.text and f"@{bot.get_me().username}" in message.text)
+    # META AI STYLE:
+    if message.chat.type == "private": return True
+    # Cek Mention
+    is_mention = message.text and f"@{bot.get_me().username}" in message.text
+    # Cek Reply
+    is_reply = message.reply_to_message and message.reply_to_message.from_user.id == bot.get_me().id
+    return is_mention or is_reply
 
 def get_ai_response(uid, text, role, is_lapor=False):
     nama = warga_database.get(uid, {}).get("name", "Warga")
@@ -102,7 +104,7 @@ def get_main_menu():
 # =========================================
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "Halo! Gunakan menu di bawah:", reply_markup=get_main_menu())
+    bot.reply_to(message, f"Halo! Saya {bot_name}. Siap bantu urusan RT.", reply_markup=get_main_menu())
 
 @bot.message_handler(content_types=['text', 'photo'])
 def main_handler(message):
@@ -110,8 +112,16 @@ def main_handler(message):
     text = message.text or message.caption or ""
     warga_database.setdefault(uid, {"name": message.from_user.first_name, "username": message.from_user.username})
 
-    # Iuran State Machine (Logic Utama)
+    # Iuran State Machine
     if uid in user_states: handle_iuran(message); return
+
+    # Spam Protection
+    spam_counter[uid] = spam_counter.get(uid, 0) + 1
+    if spam_counter[uid] > 10:
+        if message.chat.type in ['group', 'supergroup']:
+            try: bot.restrict_chat_member(message.chat.id, int(uid), until_date=datetime.datetime.now() + datetime.timedelta(minutes=5))
+            except: pass
+        spam_counter[uid] = 0; return
 
     # Admin Logic
     if get_role(uid) == "Pak RT":
@@ -137,10 +147,9 @@ def main_handler(message):
         bot.reply_to(message, "Masukin nama lengkap:")
         return
 
-    # AI Chat
+    # AI Chat (Meta AI Style)
     if is_bot_target(message):
         task_queue.put({'type': 'ai_chat', 'uid': uid, 'text': text, 'role': get_role(uid), 'is_lapor': False, 'message': message})
-        bot.reply_to(message, "⏳ Satria lagi mikir...")
 
 # =========================================
 # IURAN FLOW (ASLI)
