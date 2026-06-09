@@ -17,10 +17,7 @@ from groq import Groq
 # =====================================================================
 # 1. CONFIGURATION & LOGGING
 # =====================================================================
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s | %(levelname)s | %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger("SATRIA_ENTERPRISE")
 
 class ConfigurationManager:
@@ -31,7 +28,7 @@ class ConfigurationManager:
         self.group_id = str(os.getenv("CHAT_ID_GRUP", ""))
         
         if not self.bot_token or not self.groq_key:
-            logger.critical("BOT_TOKEN atau GROQ_API_KEY belum di-set di Environment Variable!")
+            logger.critical("BOT_TOKEN atau GROQ_API_KEY belum di-set!")
             sys.exit(1)
 
 config = ConfigurationManager()
@@ -47,17 +44,25 @@ class User:
     username: str
     created_at: datetime.datetime
 
+@dataclass(slots=True)
+class KasTransaction:
+    id: str
+    user_id: str
+    nama: str
+    kategori: str
+    nominal: int
+    created_at: datetime.datetime
+
 # =====================================================================
-# 3. REPOSITORIES (Database Sementara / In-Memory)
+# 3. REPOSITORIES (Database Layer)
 # =====================================================================
 class UserRepository:
     def __init__(self):
         self._db: Dict[str, User] = {}
         self._lock = threading.RLock()
 
-    def save(self, user: User) -> None:
-        with self._lock:
-            self._db[user.id] = user
+    def save(self, user: User):
+        with self._lock: self._db[user.id] = user
 
     def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
         with self._lock:
@@ -71,8 +76,35 @@ class UserRepository:
                 if u.username and u.username.lower() == username.lower(): return u
         return None
 
+class KasRepository:
+    def __init__(self):
+        self._db: List[KasTransaction] = []
+        self._lock = threading.RLock()
+
+    def save(self, trx: KasTransaction):
+        with self._lock:
+            self._db.append(trx)
+
+    def get_summary(self) -> str:
+        with self._lock:
+            if not self._db:
+                return "📉 Data Kas masih kosong."
+            
+            totals = {}
+            grand_total = 0
+            for t in self._db:
+                cat = t.kategori.capitalize()
+                totals[cat] = totals.get(cat, 0) + t.nominal
+                grand_total += t.nominal
+
+            res = "📊 *Laporan Total Kas RT*\n\n"
+            for cat, amt in totals.items():
+                res += f"🔹 {cat}: Rp {amt:,}\n"
+            res += f"\n💰 *Total Seluruh Kas: Rp {grand_total:,}*"
+            return res
+
 # =====================================================================
-# 4. SERVICES (Logika Utama)
+# 4. SERVICES
 # =====================================================================
 class AIOrchestrator:
     def __init__(self, api_key: str):
@@ -83,7 +115,7 @@ class AIOrchestrator:
             response = self.client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "Anda adalah SATRIA, asisten RT digital. Jawab dengan ringkas dan sopan."},
+                    {"role": "system", "content": "Anda adalah SATRIA, asisten RT digital."},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -97,48 +129,56 @@ class StateMachine:
         self._states: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
 
-    def set_state(self, tid: str, key: str, value: Any) -> None:
+    def set_state(self, tid: str, key: str, value: Any):
         with self._lock:
             if tid not in self._states: self._states[tid] = {}
             self._states[tid][key] = value
 
     def get_state(self, tid: str, key: str) -> Any:
-        with self._lock:
-            return self._states.get(tid, {}).get(key)
+        with self._lock: return self._states.get(tid, {}).get(key)
 
-    def clear_state(self, tid: str) -> None:
-        with self._lock:
-            self._states.pop(tid, None)
+    def clear_state(self, tid: str):
+        with self._lock: self._states.pop(tid, None)
 
 class BackgroundQueueWorker:
     def __init__(self):
         self.queue = queue.Queue()
         threading.Thread(target=self._process, daemon=True).start()
 
-    def _process(self) -> None:
+    def _process(self):
         while True:
             task = self.queue.get()
             try: task()
             except Exception as e: logger.error(f"Task Failed: {e}")
             finally: self.queue.task_done()
 
-    def submit(self, task: Callable) -> None:
+    def submit(self, task: Callable):
         self.queue.put(task)
 
+def get_main_menu():
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("💰 Lapor Iuran", "📋 Lapor Masalah")
+    kb.add("📊 Cek Kas RT")
+    return kb
+
 # =====================================================================
-# 5. HANDLERS (Alur Fitur)
+# 5. HANDLERS
 # =====================================================================
 class IuranHandler:
-    def __init__(self, bot: telebot.TeleBot, sm: StateMachine):
+    def __init__(self, bot: telebot.TeleBot, sm: StateMachine, kas_repo: KasRepository):
         self.bot = bot
         self.sm = sm
+        self.kas_repo = kas_repo
 
-    def initiate(self, tid: str, message: telebot.types.Message) -> None:
+    def initiate(self, tid: str, message: telebot.types.Message):
         self.sm.set_state(tid, "flow", "IURAN")
         self.sm.set_state(tid, "step", "NAMA")
-        self.bot.reply_to(message, "📝 Silahkan masukkan *Nama Lengkap Penyetor*:", parse_mode="Markdown")
+        
+        # Hapus menu utama sementara biar user ngetik nama
+        markup = telebot.types.ReplyKeyboardRemove()
+        self.bot.reply_to(message, "📝 Silahkan masukkan *Nama Lengkap Penyetor*:", parse_mode="Markdown", reply_markup=markup)
 
-    def process(self, tid: str, message: telebot.types.Message) -> bool:
+    def process(self, tid: str, message: telebot.types.Message, user: User) -> bool:
         if self.sm.get_state(tid, "flow") != "IURAN": return False
         
         step = self.sm.get_state(tid, "step")
@@ -149,21 +189,28 @@ class IuranHandler:
                 return True
             self.sm.set_state(tid, "nama", message.text)
             self.sm.set_state(tid, "step", "KATEGORI")
-            self.bot.reply_to(message, "Pilih Kategori Iuran (Ketik: Kebersihan / Keamanan):")
+            
+            # Munculin Tombol Kategori
+            kb_kategori = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+            kb_kategori.add("Kebersihan", "Keamanan", "Sosial")
+            self.bot.reply_to(message, "Pilih Kategori Iuran:", reply_markup=kb_kategori)
             
         elif step == "KATEGORI":
             if not message.text:
-                self.bot.reply_to(message, "Harap ketik kategori.")
+                self.bot.reply_to(message, "Harap pilih dari tombol kategori.")
                 return True
             self.sm.set_state(tid, "kategori", message.text)
             self.sm.set_state(tid, "step", "NOMINAL")
-            self.bot.reply_to(message, "Masukkan Nominal Transfer (Contoh: 50000):")
+            
+            # Hapus tombol kategori, suruh ngetik nominal
+            markup = telebot.types.ReplyKeyboardRemove()
+            self.bot.reply_to(message, "Masukkan Nominal Transfer (Contoh: 50000):", reply_markup=markup)
             
         elif step == "NOMINAL":
             if not message.text or not message.text.isdigit():
-                self.bot.reply_to(message, "Nominal harus angka. Coba lagi:")
+                self.bot.reply_to(message, "Nominal harus *angka saja* tanpa titik. Coba lagi:", parse_mode="Markdown")
                 return True
-            self.sm.set_state(tid, "nominal", message.text)
+            self.sm.set_state(tid, "nominal", int(message.text))
             self.sm.set_state(tid, "step", "FOTO")
             self.bot.reply_to(message, "Kirimkan *Foto Bukti Transfer* 📸:", parse_mode="Markdown")
             
@@ -172,48 +219,50 @@ class IuranHandler:
                 self.bot.reply_to(message, "Harap kirimkan gambar bukti transfer.")
                 return True
             
+            # Ambil data dari state
             nama = self.sm.get_state(tid, "nama")
+            kategori = self.sm.get_state(tid, "kategori")
             nominal = self.sm.get_state(tid, "nominal")
+            
+            # Simpan ke Database
+            trx = KasTransaction(str(uuid.uuid4()), user.id, nama, kategori, nominal, datetime.datetime.now())
+            self.kas_repo.save(trx)
+            
+            # Bersihkan state & balikin Menu Utama
             self.sm.clear_state(tid)
-            self.bot.reply_to(message, f"✅ Data Iuran Tersimpan!\nNama: {nama}\nNominal: Rp{nominal}\nMenunggu verifikasi admin.")
+            self.bot.reply_to(message, f"✅ Data Iuran Tersimpan!\n\nNama: {nama}\nKategori: {kategori}\nNominal: Rp{nominal:,}\n\nMenunggu verifikasi admin.", reply_markup=get_main_menu())
             
         return True
 
 class MentionHandler:
     def __init__(self, ai: AIOrchestrator, bot: telebot.TeleBot, user_repo: UserRepository):
-        self.ai = ai
-        self.bot = bot
-        self.user_repo = user_repo
+        self.ai = ai; self.bot = bot; self.user_repo = user_repo
 
     def process_mentions(self, text: str, sender_name: str):
-        usernames = re.findall(r"@(\w+)", text)
-        for uname in usernames:
+        for uname in re.findall(r"@(\w+)", text):
             target = self.user_repo.find_by_username(uname)
             if target:
                 prompt = f"Buat notifikasi singkat buat {target.full_name} yang di-tag oleh {sender_name} di laporan ini: '{text}'"
                 ai_msg = self.ai.generate_response(prompt)
-                
-                # Japri User
                 try: self.bot.send_message(target.telegram_id, f"🔔 Notifikasi:\n{ai_msg}")
                 except: pass
-                
-                # Tembus ke Grup
                 if config.group_id:
                     try: self.bot.send_message(config.group_id, f"📩 Info untuk @{uname}:\n{ai_msg}")
                     except: pass
 
 # =====================================================================
-# 6. APPLICATION FACTORY (Pusat Bot)
+# 6. APPLICATION FACTORY
 # =====================================================================
 class SATRIAApp:
     def __init__(self):
         self.bot = telebot.TeleBot(config.bot_token)
         self.user_repo = UserRepository()
+        self.kas_repo = KasRepository()
         self.ai = AIOrchestrator(config.groq_key)
         self.sm = StateMachine()
         self.worker = BackgroundQueueWorker()
         
-        self.iuran_handler = IuranHandler(self.bot, self.sm)
+        self.iuran_handler = IuranHandler(self.bot, self.sm, self.kas_repo)
         self.mention_handler = MentionHandler(self.ai, self.bot, self.user_repo)
 
     def setup_routes(self):
@@ -222,7 +271,6 @@ class SATRIAApp:
             tid = str(message.from_user.id)
             user = self.user_repo.find_by_telegram_id(tid)
             
-            # FIXED: message.from_user.username instead of message.username
             if not user:
                 user = User(
                     id=str(uuid.uuid4()),
@@ -233,38 +281,33 @@ class SATRIAApp:
                 )
                 self.user_repo.save(user)
             
-            kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-            kb.add("💰 Lapor Iuran", "📋 Lapor Masalah")
-            self.bot.reply_to(message, "SATRIA Enterprise Siap Digunakan.", reply_markup=kb)
+            self.bot.reply_to(message, "SATRIA Enterprise Siap Digunakan.", reply_markup=get_main_menu())
 
         @self.bot.message_handler(content_types=['text', 'photo'])
         def handle_all(message: telebot.types.Message):
             tid = str(message.from_user.id)
             
-            # FIXED: message.from_user.username
             user = self.user_repo.find_by_telegram_id(tid)
             if not user:
-                user = User(
-                    id=str(uuid.uuid4()),
-                    telegram_id=tid,
-                    full_name=message.from_user.first_name or "Warga",
-                    username=message.from_user.username or "",
-                    created_at=datetime.datetime.now()
-                )
+                user = User(str(uuid.uuid4()), tid, message.from_user.first_name or "Warga", message.from_user.username or "", datetime.datetime.now())
                 self.user_repo.save(user)
 
-            # 1. Cek apakah user sedang dalam proses Iuran
-            if self.iuran_handler.process(tid, message):
+            # 1. State Machine Interceptor untuk Iuran
+            if self.iuran_handler.process(tid, message, user):
                 return
 
             text = message.text or message.caption or ""
             
-            # 2. Cek Menu Iuran
+            # 2. Routing Menu
             if text == "💰 Lapor Iuran":
                 self.iuran_handler.initiate(tid, message)
                 return
                 
-            # 3. Cek Menu Laporan & Scan Mention
+            elif text == "📊 Cek Kas RT":
+                summary = self.kas_repo.get_summary()
+                self.bot.reply_to(message, summary, parse_mode="Markdown")
+                return
+                
             elif "lapor" in text.lower() or "masalah" in text.lower() or "keluhan" in text.lower():
                 self.bot.reply_to(message, "✅ Laporan Anda telah dicatat.")
                 if config.group_id:
@@ -273,7 +316,7 @@ class SATRIAApp:
                 self.mention_handler.process_mentions(text, user.full_name)
                 return
 
-            # 4. AI Chat (Jika Bot di-tag atau di Private Chat)
+            # 3. AI Chat
             bot_me = self.bot.get_me().username
             if (bot_me and f"@{bot_me}" in text) or message.chat.type == "private":
                 def ai_task():
@@ -283,7 +326,6 @@ class SATRIAApp:
 
     def run(self):
         logger.info("Bot is polling...")
-        
         def shutdown(sig, frame):
             logger.info("Shutting down...")
             self.bot.stop_polling()
@@ -291,7 +333,6 @@ class SATRIAApp:
             
         signal.signal(signal.SIGINT, shutdown)
         signal.signal(signal.SIGTERM, shutdown)
-        
         self.bot.infinity_polling(skip_pending=True)
 
 if __name__ == "__main__":
