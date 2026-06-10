@@ -8,12 +8,13 @@ import logging
 import signal
 import sys
 import queue
-import sqlite3
 from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass
 
 import telebot
 from groq import Groq
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # =====================================================================
 # 1. CONFIGURATION & LOGGING
@@ -27,16 +28,14 @@ class ConfigurationManager:
         self.groq_key  = os.getenv("GROQ_API_KEY", "")
         self.admin_id  = str(os.getenv("ADMIN_ID", ""))
         self.group_id  = str(os.getenv("CHAT_ID_GRUP", ""))
-
-        if os.path.exists("/app/data"):
-            self.db_name = "/app/data/satria_rt.db"
-            logger.info("Railway Volume detected. Using /app/data/satria_rt.db")
-        else:
-            self.db_name = "satria_rt.db"
-            logger.info("Local environment detected. Using local satria_rt.db")
+        self.db_url    = os.getenv("DB_URL", "")
 
         if not self.bot_token or not self.groq_key:
             logger.critical("BOT_TOKEN atau GROQ_API_KEY belum di-set di env!")
+            sys.exit(1)
+
+        if not self.db_url:
+            logger.critical("DB_URL belum di-set di env!")
             sys.exit(1)
 
 config = ConfigurationManager()
@@ -61,17 +60,16 @@ class KasTransaction:
     nominal: int
     created_at: datetime.datetime
 
-# Model baru: pending iuran menunggu approval admin
 @dataclass(slots=True)
 class PendingIuran:
-    id: str           # UUID, dipakai sebagai callback_data
-    user_id: str      # UUID user di DB kita
-    telegram_id: str  # Telegram ID warga, untuk notifikasi balik
+    id: str
+    user_id: str
+    telegram_id: str
     nama: str
     kategori: str
     nominal: int
     photo_file_id: str
-    status: str       # PENDING | APPROVED | REJECTED
+    status: str
     created_at: datetime.datetime
 
 @dataclass(slots=True)
@@ -83,62 +81,58 @@ class CitizenReport:
     created_at: datetime.datetime
 
 # =====================================================================
-# 3. DATABASE INITIALIZER
+# 3. DATABASE — PostgreSQL
 # =====================================================================
+def get_conn():
+    return psycopg2.connect(config.db_url, cursor_factory=RealDictCursor)
+
 def init_database():
-    conn = sqlite3.connect(config.db_name)
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            telegram_id TEXT UNIQUE,
-            full_name TEXT,
-            username TEXT,
-            created_at TEXT
-        )
-    """)
-
-    # Tabel kas hanya berisi transaksi yang SUDAH diapprove
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS kas_transactions (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            nama TEXT,
-            kategori TEXT,
-            nominal INTEGER,
-            created_at TEXT
-        )
-    """)
-
-    # Tabel antrian approval
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS pending_iuran (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            telegram_id TEXT,
-            nama TEXT,
-            kategori TEXT,
-            nominal INTEGER,
-            photo_file_id TEXT,
-            status TEXT DEFAULT 'PENDING',
-            created_at TEXT
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS citizen_reports (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            reporter_name TEXT,
-            content TEXT,
-            created_at TEXT
-        )
-    """)
-
-    conn.commit()
+    conn = get_conn()
+    with conn:
+        with conn.cursor() as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    telegram_id TEXT UNIQUE,
+                    full_name TEXT,
+                    username TEXT,
+                    created_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS kas_transactions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    nama TEXT,
+                    kategori TEXT,
+                    nominal INTEGER,
+                    created_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS pending_iuran (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    telegram_id TEXT,
+                    nama TEXT,
+                    kategori TEXT,
+                    nominal INTEGER,
+                    photo_file_id TEXT,
+                    status TEXT DEFAULT 'PENDING',
+                    created_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS citizen_reports (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    reporter_name TEXT,
+                    content TEXT,
+                    created_at TIMESTAMPTZ
+                )
+            """)
     conn.close()
-    logger.info("SQLite Database initialized successfully.")
+    logger.info("PostgreSQL Database initialized successfully.")
 
 init_database()
 
@@ -151,35 +145,40 @@ class UserRepository:
 
     def save(self, user: User):
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            conn.execute("""
-                INSERT INTO users (id, telegram_id, full_name, username, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(telegram_id) DO UPDATE SET
-                    full_name=excluded.full_name,
-                    username=excluded.username
-            """, (user.id, user.telegram_id, user.full_name, user.username, user.created_at.isoformat()))
-            conn.commit(); conn.close()
+            conn = get_conn()
+            with conn:
+                with conn.cursor() as c:
+                    c.execute("""
+                        INSERT INTO users (id, telegram_id, full_name, username, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (telegram_id) DO UPDATE SET
+                            full_name = EXCLUDED.full_name,
+                            username  = EXCLUDED.username
+                    """, (user.id, user.telegram_id, user.full_name,
+                          user.username, user.created_at))
+            conn.close()
 
     def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            row = conn.execute(
-                "SELECT id,telegram_id,full_name,username,created_at FROM users WHERE telegram_id=?",
-                (str(telegram_id),)
-            ).fetchone()
+            conn = get_conn()
+            with conn.cursor() as c:
+                c.execute("SELECT * FROM users WHERE telegram_id = %s", (str(telegram_id),))
+                row = c.fetchone()
             conn.close()
-            return User(*row[:4], datetime.datetime.fromisoformat(row[4])) if row else None
+            if not row: return None
+            return User(row["id"], row["telegram_id"], row["full_name"],
+                        row["username"], row["created_at"])
 
     def find_by_username(self, username: str) -> Optional[User]:
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            row = conn.execute(
-                "SELECT id,telegram_id,full_name,username,created_at FROM users WHERE LOWER(username)=LOWER(?)",
-                (username,)
-            ).fetchone()
+            conn = get_conn()
+            with conn.cursor() as c:
+                c.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
+                row = c.fetchone()
             conn.close()
-            return User(*row[:4], datetime.datetime.fromisoformat(row[4])) if row else None
+            if not row: return None
+            return User(row["id"], row["telegram_id"], row["full_name"],
+                        row["username"], row["created_at"])
 
 
 class KasRepository:
@@ -188,27 +187,32 @@ class KasRepository:
 
     def save(self, trx: KasTransaction):
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            conn.execute("""
-                INSERT INTO kas_transactions (id,user_id,nama,kategori,nominal,created_at)
-                VALUES (?,?,?,?,?,?)
-            """, (trx.id, trx.user_id, trx.nama, trx.kategori, trx.nominal, trx.created_at.isoformat()))
-            conn.commit(); conn.close()
+            conn = get_conn()
+            with conn:
+                with conn.cursor() as c:
+                    c.execute("""
+                        INSERT INTO kas_transactions
+                            (id, user_id, nama, kategori, nominal, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (trx.id, trx.user_id, trx.nama,
+                          trx.kategori, trx.nominal, trx.created_at))
+            conn.close()
 
     def get_summary(self) -> str:
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            rows = conn.execute(
-                "SELECT kategori, SUM(nominal) FROM kas_transactions GROUP BY kategori"
-            ).fetchall()
-            grand = conn.execute("SELECT SUM(nominal) FROM kas_transactions").fetchone()[0] or 0
+            conn = get_conn()
+            with conn.cursor() as c:
+                c.execute("SELECT kategori, SUM(nominal) AS total FROM kas_transactions GROUP BY kategori")
+                rows = c.fetchall()
+                c.execute("SELECT SUM(nominal) AS grand FROM kas_transactions")
+                grand = c.fetchone()["grand"] or 0
             conn.close()
 
             if not rows:
                 return "📉 Data Kas masih kosong."
             res = "📊 *Laporan Total Kas RT*\n\n"
-            for cat, amt in rows:
-                res += f"🔹 {cat.capitalize()}: Rp {amt:,}\n"
+            for row in rows:
+                res += f"🔹 {row['kategori'].capitalize()}: Rp {row['total']:,}\n"
             res += f"\n💰 *Total Seluruh Kas: Rp {grand:,}*"
             return res
 
@@ -219,33 +223,37 @@ class PendingIuranRepository:
 
     def save(self, p: PendingIuran):
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            conn.execute("""
-                INSERT INTO pending_iuran
-                    (id,user_id,telegram_id,nama,kategori,nominal,photo_file_id,status,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
-            """, (p.id, p.user_id, p.telegram_id, p.nama, p.kategori,
-                  p.nominal, p.photo_file_id, p.status, p.created_at.isoformat()))
-            conn.commit(); conn.close()
+            conn = get_conn()
+            with conn:
+                with conn.cursor() as c:
+                    c.execute("""
+                        INSERT INTO pending_iuran
+                            (id, user_id, telegram_id, nama, kategori,
+                             nominal, photo_file_id, status, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (p.id, p.user_id, p.telegram_id, p.nama, p.kategori,
+                          p.nominal, p.photo_file_id, p.status, p.created_at))
+            conn.close()
 
     def find_by_id(self, pid: str) -> Optional[PendingIuran]:
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            row = conn.execute(
-                "SELECT id,user_id,telegram_id,nama,kategori,nominal,photo_file_id,status,created_at "
-                "FROM pending_iuran WHERE id=?", (pid,)
-            ).fetchone()
+            conn = get_conn()
+            with conn.cursor() as c:
+                c.execute("SELECT * FROM pending_iuran WHERE id = %s", (pid,))
+                row = c.fetchone()
             conn.close()
             if not row: return None
-            return PendingIuran(row[0], row[1], row[2], row[3], row[4],
-                                row[5], row[6], row[7],
-                                datetime.datetime.fromisoformat(row[8]))
+            return PendingIuran(row["id"], row["user_id"], row["telegram_id"],
+                                row["nama"], row["kategori"], row["nominal"],
+                                row["photo_file_id"], row["status"], row["created_at"])
 
     def update_status(self, pid: str, status: str):
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            conn.execute("UPDATE pending_iuran SET status=? WHERE id=?", (status, pid))
-            conn.commit(); conn.close()
+            conn = get_conn()
+            with conn:
+                with conn.cursor() as c:
+                    c.execute("UPDATE pending_iuran SET status = %s WHERE id = %s", (status, pid))
+            conn.close()
 
 
 class ReportRepository:
@@ -254,24 +262,26 @@ class ReportRepository:
 
     def save(self, report: CitizenReport):
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            conn.execute("""
-                INSERT INTO citizen_reports (id,user_id,reporter_name,content,created_at)
-                VALUES (?,?,?,?,?)
-            """, (report.id, report.user_id, report.reporter_name,
-                  report.content, report.created_at.isoformat()))
-            conn.commit(); conn.close()
+            conn = get_conn()
+            with conn:
+                with conn.cursor() as c:
+                    c.execute("""
+                        INSERT INTO citizen_reports
+                            (id, user_id, reporter_name, content, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (report.id, report.user_id, report.reporter_name,
+                          report.content, report.created_at))
+            conn.close()
 
     def get_all(self) -> List[CitizenReport]:
         with self._lock:
-            conn = sqlite3.connect(config.db_name)
-            rows = conn.execute(
-                "SELECT id,user_id,reporter_name,content,created_at "
-                "FROM citizen_reports ORDER BY created_at DESC"
-            ).fetchall()
+            conn = get_conn()
+            with conn.cursor() as c:
+                c.execute("SELECT * FROM citizen_reports ORDER BY created_at DESC")
+                rows = c.fetchall()
             conn.close()
-            return [CitizenReport(r[0], r[1], r[2], r[3],
-                                  datetime.datetime.fromisoformat(r[4])) for r in rows]
+            return [CitizenReport(r["id"], r["user_id"], r["reporter_name"],
+                                  r["content"], r["created_at"]) for r in rows]
 
 # =====================================================================
 # 5. CORE SERVICES
@@ -338,11 +348,6 @@ def get_main_menu():
 # 6. HANDLERS
 # =====================================================================
 class IuranHandler:
-    """
-    Alur: NAMA → KATEGORI → NOMINAL → FOTO
-    Setelah foto diterima, data masuk ke pending_iuran (status=PENDING).
-    Admin mendapat notifikasi + InlineKeyboard Setujui/Tolak.
-    """
     def __init__(self, bot: telebot.TeleBot, sm: StateMachine,
                  kas_repo: KasRepository, pending_repo: PendingIuranRepository):
         self.bot          = bot
@@ -353,16 +358,12 @@ class IuranHandler:
     def initiate(self, tid: str, message: telebot.types.Message):
         self.sm.set_state(tid, "flow", "IURAN")
         self.sm.set_state(tid, "step", "NAMA")
-        self.bot.reply_to(
-            message,
-            "📝 Silahkan masukkan *Nama Lengkap Penyetor*:",
-            parse_mode="Markdown",
-            reply_markup=telebot.types.ReplyKeyboardRemove()
-        )
+        self.bot.reply_to(message, "📝 Silahkan masukkan *Nama Lengkap Penyetor*:",
+                          parse_mode="Markdown",
+                          reply_markup=telebot.types.ReplyKeyboardRemove())
 
     def process(self, tid: str, message: telebot.types.Message, user: User) -> bool:
-        if self.sm.get_state(tid, "flow") != "IURAN":
-            return False
+        if self.sm.get_state(tid, "flow") != "IURAN": return False
         step = self.sm.get_state(tid, "step")
 
         if step == "NAMA":
@@ -386,47 +387,33 @@ class IuranHandler:
         elif step == "NOMINAL":
             if not message.text: return True
             if message.text == "Input Manual":
-                self.bot.reply_to(
-                    message,
-                    "Ketik angka nominal saja (contoh: 15000):",
-                    reply_markup=telebot.types.ReplyKeyboardRemove()
-                )
+                self.bot.reply_to(message, "Ketik angka nominal saja (contoh: 15000):",
+                                  reply_markup=telebot.types.ReplyKeyboardRemove())
                 return True
-
             clean = re.sub(r'\D', '', message.text)
             if not clean:
                 self.bot.reply_to(message, "❌ Format salah. Pilih tombol atau ketik angka:")
                 return True
-
             nominal_value = int(clean)
             if nominal_value < 10000:
-                self.bot.reply_to(
-                    message,
-                    "❌ *Minimal Rp10.000.* Silahkan masukkan nominal yang valid:",
-                    parse_mode="Markdown"
-                )
+                self.bot.reply_to(message, "❌ *Minimal Rp10.000.* Silahkan masukkan nominal yang valid:",
+                                  parse_mode="Markdown")
                 return True
-
             self.sm.set_state(tid, "nominal", nominal_value)
             self.sm.set_state(tid, "step", "FOTO")
-            self.bot.reply_to(
-                message,
-                "Kirimkan *Foto Bukti Transfer* 📸:",
-                parse_mode="Markdown",
-                reply_markup=telebot.types.ReplyKeyboardRemove()
-            )
+            self.bot.reply_to(message, "Kirimkan *Foto Bukti Transfer* 📸:",
+                              parse_mode="Markdown",
+                              reply_markup=telebot.types.ReplyKeyboardRemove())
 
         elif step == "FOTO":
             if not message.photo:
                 self.bot.reply_to(message, "Harap kirimkan gambar bukti transfer.")
                 return True
-
             nama     = self.sm.get_state(tid, "nama")
             kategori = self.sm.get_state(tid, "kategori")
             nominal  = self.sm.get_state(tid, "nominal")
-            photo_id = message.photo[-1].file_id   # resolusi tertinggi
+            photo_id = message.photo[-1].file_id
 
-            # Simpan ke pending, BELUM masuk kas
             pending = PendingIuran(
                 id            = str(uuid.uuid4()),
                 user_id       = user.id,
@@ -441,7 +428,6 @@ class IuranHandler:
             self.pending_repo.save(pending)
             self.sm.clear_state(tid)
 
-            # Beritahu warga bahwa iuran menunggu verifikasi
             self.bot.reply_to(
                 message,
                 f"✅ *Iuran Terkirim & Menunggu Verifikasi Admin*\n\n"
@@ -452,56 +438,34 @@ class IuranHandler:
                 parse_mode="Markdown",
                 reply_markup=get_main_menu()
             )
-
-            # Kirim notifikasi + bukti ke admin
             self._notify_admin(pending)
-
         return True
 
     def _notify_admin(self, p: PendingIuran):
-        """Kirim foto bukti + tombol Setujui/Tolak ke admin."""
         if not config.admin_id:
-            logger.warning("ADMIN_ID belum di-set, approval tidak bisa dikirim.")
+            logger.warning("ADMIN_ID belum di-set.")
             return
-
         caption = (
             f"🔔 *Permohonan Verifikasi Iuran*\n\n"
             f"👤 Nama     : {p.nama}\n"
             f"📂 Kategori : {p.kategori}\n"
             f"💵 Nominal  : Rp {p.nominal:,}\n"
             f"🕒 Waktu    : {p.created_at.strftime('%d/%m/%Y %H:%M')}\n\n"
-            f"ID Transaksi: `{p.id}`"
+            f"ID: `{p.id}`"
         )
-
         kb = telebot.types.InlineKeyboardMarkup()
         kb.add(
-            telebot.types.InlineKeyboardButton(
-                "✅ Setujui", callback_data=f"APPROVE:{p.id}"
-            ),
-            telebot.types.InlineKeyboardButton(
-                "❌ Tolak",   callback_data=f"REJECT:{p.id}"
-            )
+            telebot.types.InlineKeyboardButton("✅ Setujui", callback_data=f"APPROVE:{p.id}"),
+            telebot.types.InlineKeyboardButton("❌ Tolak",   callback_data=f"REJECT:{p.id}")
         )
-
         try:
-            self.bot.send_photo(
-                config.admin_id,
-                p.photo_file_id,
-                caption=caption,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-            logger.info(f"Notifikasi approval dikirim ke admin untuk pending_id={p.id}")
+            self.bot.send_photo(config.admin_id, p.photo_file_id,
+                                caption=caption, parse_mode="Markdown", reply_markup=kb)
         except Exception as e:
             logger.error(f"Gagal kirim notifikasi ke admin: {e}")
 
 
 class ApprovalHandler:
-    """
-    Menangani callback_data dari InlineKeyboard admin:
-      APPROVE:<pending_id>  →  pindahkan ke kas_transactions, beritahu warga
-      REJECT:<pending_id>   →  update status REJECTED, beritahu warga
-    """
     def __init__(self, bot: telebot.TeleBot,
                  pending_repo: PendingIuranRepository,
                  kas_repo: KasRepository):
@@ -510,14 +474,11 @@ class ApprovalHandler:
         self.kas_repo     = kas_repo
 
     def handle(self, call: telebot.types.CallbackQuery):
-        data = call.data  # "APPROVE:uuid" atau "REJECT:uuid"
-
+        data = call.data
         if not (data.startswith("APPROVE:") or data.startswith("REJECT:")):
             return
 
-        # Hanya admin yang boleh menekan tombol ini
-        caller_id = str(call.from_user.id)
-        if caller_id != config.admin_id:
+        if str(call.from_user.id) != config.admin_id:
             self.bot.answer_callback_query(call.id, "⛔ Hanya admin yang bisa melakukan ini.")
             return
 
@@ -529,14 +490,10 @@ class ApprovalHandler:
             return
 
         if pending.status != "PENDING":
-            self.bot.answer_callback_query(
-                call.id,
-                f"⚠️ Iuran ini sudah diproses sebelumnya ({pending.status})."
-            )
+            self.bot.answer_callback_query(call.id, f"⚠️ Sudah diproses ({pending.status}).")
             return
 
         if action == "APPROVE":
-            # Pindahkan ke kas resmi
             trx = KasTransaction(
                 id         = str(uuid.uuid4()),
                 user_id    = pending.user_id,
@@ -547,20 +504,15 @@ class ApprovalHandler:
             )
             self.kas_repo.save(trx)
             self.pending_repo.update_status(pending_id, "APPROVED")
-
-            # Edit pesan admin — hapus tombol, tambah keterangan
             try:
                 self.bot.edit_message_caption(
-                    chat_id    = call.message.chat.id,
-                    message_id = call.message.message_id,
-                    caption    = call.message.caption + "\n\n✅ *DISETUJUI*",
-                    parse_mode = "Markdown"
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    caption=call.message.caption + "\n\n✅ *DISETUJUI*",
+                    parse_mode="Markdown"
                 )
             except Exception: pass
-
-            self.bot.answer_callback_query(call.id, "✅ Iuran berhasil disetujui dan masuk kas!")
-
-            # Beritahu warga
+            self.bot.answer_callback_query(call.id, "✅ Iuran disetujui dan masuk kas!")
             try:
                 self.bot.send_message(
                     pending.telegram_id,
@@ -576,19 +528,15 @@ class ApprovalHandler:
 
         elif action == "REJECT":
             self.pending_repo.update_status(pending_id, "REJECTED")
-
             try:
                 self.bot.edit_message_caption(
-                    chat_id    = call.message.chat.id,
-                    message_id = call.message.message_id,
-                    caption    = call.message.caption + "\n\n❌ *DITOLAK*",
-                    parse_mode = "Markdown"
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    caption=call.message.caption + "\n\n❌ *DITOLAK*",
+                    parse_mode="Markdown"
                 )
             except Exception: pass
-
             self.bot.answer_callback_query(call.id, "❌ Iuran ditolak.")
-
-            # Beritahu warga
             try:
                 self.bot.send_message(
                     pending.telegram_id,
@@ -620,25 +568,19 @@ class MentionHandler:
                 f"Buat teguran tegas, logis, dan profesional dalam bahasa Indonesia untuk @{uname}."
             )
             ai_msg = self.ai.generate_response(prompt)
-
             if config.group_id:
                 try:
-                    self.bot.send_message(
-                        config.group_id,
-                        f"⚠️ *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}",
-                        parse_mode="Markdown"
-                    )
+                    self.bot.send_message(config.group_id,
+                                          f"⚠️ *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}",
+                                          parse_mode="Markdown")
                 except Exception as e:
                     logger.error(f"Gagal kirim teguran ke grup: {e}")
-
             target = self.user_repo.find_by_username(uname)
             if target:
                 try:
-                    self.bot.send_message(
-                        target.telegram_id,
-                        f"🚨 *Peringatan Keamanan Lingkungan RT*\n\n{ai_msg}",
-                        parse_mode="Markdown"
-                    )
+                    self.bot.send_message(target.telegram_id,
+                                          f"🚨 *Peringatan Keamanan Lingkungan RT*\n\n{ai_msg}",
+                                          parse_mode="Markdown")
                 except Exception as e:
                     logger.error(f"Gagal Japri target: {e}")
 
@@ -676,35 +618,22 @@ class SATRIAApp:
 
     def setup_routes(self):
 
-        # ------------------------------------------------------------------
-        # /start
-        # ------------------------------------------------------------------
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: telebot.types.Message):
             self._get_or_create_user(message.from_user)
-            self.bot.reply_to(
-                message,
-                "🤖 Sistem *SATRIA RT Enterprise v9.2* Aktif.\n\nSelamat datang! Gunakan menu di bawah.",
-                parse_mode="Markdown",
-                reply_markup=get_main_menu()
-            )
+            self.bot.reply_to(message,
+                              "🤖 Sistem *SATRIA RT Enterprise v9.2* Aktif.\n\nSelamat datang!",
+                              parse_mode="Markdown", reply_markup=get_main_menu())
 
-        # ------------------------------------------------------------------
-        # Callback dari tombol Setujui / Tolak di pesan admin
-        # ------------------------------------------------------------------
         @self.bot.callback_query_handler(func=lambda call: True)
         def handle_callback(call: telebot.types.CallbackQuery):
             self.approval_handler.handle(call)
 
-        # ------------------------------------------------------------------
-        # Semua pesan teks & foto
-        # ------------------------------------------------------------------
         @self.bot.message_handler(content_types=['text', 'photo'])
         def handle_all(message: telebot.types.Message):
             tid  = str(message.from_user.id)
             user = self._get_or_create_user(message.from_user)
 
-            # Alur multi-step iuran (state machine)
             if self.iuran_handler.process(tid, message, user):
                 return
 
@@ -729,17 +658,15 @@ class SATRIAApp:
                     self.bot.reply_to(message, res, parse_mode="Markdown")
 
             elif text == "📋 Lapor Masalah":
-                self.bot.reply_to(
-                    message,
-                    "Silahkan ketik laporan/keluhan Anda. "
-                    "Sertakan `@username` warga yang bersangkutan jika ada masalah spesifik."
-                )
+                self.bot.reply_to(message,
+                                  "Silahkan ketik laporan/keluhan Anda. "
+                                  "Sertakan `@username` jika ada warga yang terlibat.")
 
             elif any(kw in text.lower() for kw in ("lapor", "masalah", "keluhan")):
-                report = CitizenReport(str(uuid.uuid4()), user.id, user.full_name, text, datetime.datetime.now())
+                report = CitizenReport(str(uuid.uuid4()), user.id,
+                                       user.full_name, text, datetime.datetime.now())
                 self.report_repo.save(report)
                 self.bot.reply_to(message, "✅ Laporan berhasil dicatat ke sistem.")
-
                 if config.group_id:
                     try:
                         self.bot.send_message(
@@ -747,7 +674,6 @@ class SATRIAApp:
                             f"📢 *Laporan Warga Masuk*\n*Dari:* {user.full_name}\n*Isi:* {text}"
                         )
                     except Exception: pass
-
                 self.worker.submit(
                     lambda t=text, n=user.full_name: self.mention_handler.process_mentions(t, n)
                 )
