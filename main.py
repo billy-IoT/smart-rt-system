@@ -25,10 +25,10 @@ class ConfigurationManager:
         self.bot_token = os.getenv("BOT_TOKEN", "")
         self.groq_key = os.getenv("GROQ_API_KEY", "")
         self.admin_id = str(os.getenv("ADMIN_ID", ""))
-        self.group_id = str(os.getenv("CHAT_ID_GRUP", "")) # Pastikan ID Grup diawali tanda minus, contoh: -100123456789
+        self.group_id = str(os.getenv("CHAT_ID_GRUP", ""))
         
         if not self.bot_token or not self.groq_key:
-            logger.critical("BOT_TOKEN atau GROQ_API_KEY belum disetting!")
+            logger.critical("BOT_TOKEN atau GROQ_API_KEY belum di-set di env!")
             sys.exit(1)
 
 config = ConfigurationManager()
@@ -130,7 +130,7 @@ class AIOrchestrator:
             response = self.client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "Anda adalah SATRIA, asisten RT digital yang cerdas, tertib, tegas, dan solutif."},
+                    {"role": "system", "content": "Anda adalah SATRIA, asisten RT digital yang tegas, tertib, dan solutif."},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -176,7 +176,7 @@ def get_main_menu():
     return kb
 
 # =====================================================================
-# 5. HANDLERS (LOGIKA FITUR)
+# 5. HANDLERS
 # =====================================================================
 class IuranHandler:
     def __init__(self, bot: telebot.TeleBot, sm: StateMachine, kas_repo: KasRepository):
@@ -197,8 +197,6 @@ class IuranHandler:
             if not message.text: return True
             self.sm.set_state(tid, "nama", message.text)
             self.sm.set_state(tid, "step", "KATEGORI")
-            
-            # Tombol Kategori
             kb_kategori = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
             kb_kategori.add("Kebersihan", "Keamanan", "Sosial")
             self.bot.reply_to(message, "Pilih Kategori Iuran:", reply_markup=kb_kategori)
@@ -208,12 +206,11 @@ class IuranHandler:
             self.sm.set_state(tid, "kategori", message.text)
             self.sm.set_state(tid, "step", "NOMINAL")
             
-            # Tombol Nominal Cepat
             kb_nominal = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
             kb_nominal.add("Rp 10.000", "Rp 20.000")
             kb_nominal.add("Rp 50.000", "Rp 100.000")
             kb_nominal.add("Input Manual")
-            self.bot.reply_to(message, "Pilih nominal iuran di bawah atau pilih 'Input Manual' jika berbeda:", reply_markup=kb_nominal)
+            self.bot.reply_to(message, "Pilih nominal iuran di bawah atau pilih 'Input Manual' (Minimal Rp10.000):", reply_markup=kb_nominal)
             
         elif step == "NOMINAL":
             if not message.text: return True
@@ -222,15 +219,13 @@ class IuranHandler:
                 self.bot.reply_to(message, "Silahkan ketik angka nominal iuran saja (Minimal Rp10.000, contoh: 15000):", reply_markup=telebot.types.ReplyKeyboardRemove())
                 return True
             
-            # Sanitasi teks (Menghapus tulisan "Rp " atau ".")
             clean_nominal = re.sub(r'\D', '', message.text)
             if not clean_nominal or not clean_nominal.isdigit():
-                self.bot.reply_to(message, "❌ Format salah. Harap pilih tombol nominal atau ketik angka saja:")
+                self.bot.reply_to(message, "❌ Format salah. Harap pilih tombol nominal yang tersedia atau ketik angka saja:")
                 return True
                 
             nominal_value = int(clean_nominal)
             
-            # Validasi Minimal 10.000
             if nominal_value < 10000:
                 self.bot.reply_to(message, "❌ *Nominal Terlalu Kecil!* Minimal iuran kas warga adalah *Rp10.000*. Silahkan masukkan nominal yang valid:", parse_mode="Markdown")
                 return True
@@ -243,7 +238,6 @@ class IuranHandler:
             if not message.photo:
                 self.bot.reply_to(message, "Harap kirimkan gambar bukti transfer.")
                 return True
-            
             nama = self.sm.get_state(tid, "nama")
             kategori = self.sm.get_state(tid, "kategori")
             nominal = self.sm.get_state(tid, "nominal")
@@ -251,8 +245,7 @@ class IuranHandler:
             trx = KasTransaction(str(uuid.uuid4()), user.id, nama, kategori, nominal, datetime.datetime.now())
             self.kas_repo.save(trx)
             self.sm.clear_state(tid)
-            
-            self.bot.reply_to(message, f"✅ *Data Iuran Tersimpan!*\n\nNama: {nama}\nKategori: {kategori}\nNominal: Rp{nominal:,}\n\nMenunggu verifikasi admin.", parse_mode="Markdown", reply_markup=get_main_menu())
+            self.bot.reply_to(message, f"✅ Data Iuran Tersimpan!\n\nNama: {nama}\nKategori: {kategori}\nNominal: Rp{nominal:,}\n\nMenunggu verifikasi admin.", reply_markup=get_main_menu())
         return True
 
 class MentionHandler:
@@ -262,29 +255,36 @@ class MentionHandler:
     def process_mentions(self, text: str, sender_name: str):
         usernames = re.findall(r"@(\w+)", text)
         for uname in usernames:
+            # 1. BUAT AI PROMPT (Pasti jalan tanpa nunggu validasi database)
+            prompt = (
+                f"Anda adalah SATRIA, asisten RT. Warga bernama {sender_name} baru saja melaporkan masalah. "
+                f"Dia sengaja mengetag @{uname} sebagai pihak pembuat masalah. "
+                f"Isi laporannya: '{text}'. "
+                f"Buatlah satu pesan teguran yang tegas, logis, dan menyadarkan untuk @{uname}. "
+                f"Gunakan bahasa Indonesia yang profesional namun menohok agar dia segera memperbaiki kesalahannya."
+            )
+            ai_msg = self.ai.generate_response(prompt)
+            
+            # 2. SELALU KIRIM KE GRUP (Teguran Terbuka)
+            if config.group_id:
+                try: 
+                    self.bot.send_message(config.group_id, f"⚠️ *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}", parse_mode="Markdown")
+                    logger.info(f"Teguran AI untuk @{uname} dikirim ke grup.")
+                except Exception as e: 
+                    logger.error(f"Gagal kirim teguran ke grup: {e}")
+
+            # 3. KIRIM JAPRI HANYA JIKA TARGET SUDAH DAFTAR BOT
             target = self.user_repo.find_by_username(uname)
             if target:
-                prompt = (
-                    f"Anda adalah SATRIA, asisten RT. Warga bernama {sender_name} baru saja melaporkan masalah/keluhan lingkungan "
-                    f"dan sengaja menandai/mengetag @{uname} (Nama lengkap: {target.full_name}) sebagai pihak yang terkait atau bertanggung jawab. "
-                    f"Isi laporannya adalah: '{text}'. "
-                    f"Buatlah satu pesan teguran yang tegas, logis, namun tetap menggunakan bahasa yang sopan. "
-                    f"Tujuannya agar {target.full_name} segera sadar akan ketidaknyamanan yang ditimbulkannya bagi warga sekitar, "
-                    f"dan tergerak untuk segera mengklarifikasi atau membereskan masalah tersebut demi ketertiban bersama di RT."
-                )
-                ai_msg = self.ai.generate_response(prompt)
-                
-                # 1. Tembak Japri ke Pelaku
-                try: self.bot.send_message(target.telegram_id, f"⚠️ *Pemberitahuan Teguran Lingkungan RT*\n\n{ai_msg}", parse_mode="Markdown")
-                except Exception as e: logger.error(f"Gagal Japri target: {e}")
-                
-                # 2. Tembak Broadcast Teguran Terbuka ke Grup
-                if config.group_id:
-                    try: self.bot.send_message(config.group_id, f"📩 *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}", parse_mode="Markdown")
-                    except Exception as e: logger.error(f"Gagal kirim teguran ke grup: {e}")
+                try: 
+                    self.bot.send_message(target.telegram_id, f"🚨 *Peringatan Keamanan Lingkungan RT*\n\n{ai_msg}", parse_mode="Markdown")
+                except Exception as e: 
+                    logger.error(f"Gagal Japri target: {e}")
+            else:
+                logger.info(f"@{uname} belum terdaftar di database bot, skip Japri.")
 
 # =====================================================================
-# 6. APPLICATION FACTORY (INTI BOT)
+# 6. APPLICATION FACTORY
 # =====================================================================
 class SATRIAApp:
     def __init__(self):
@@ -312,24 +312,20 @@ class SATRIAApp:
                     created_at=datetime.datetime.now()
                 )
                 self.user_repo.save(user)
-            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v8.0 Aktif.", reply_markup=get_main_menu())
+            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v8.1 Aktif.", reply_markup=get_main_menu())
 
         @self.bot.message_handler(content_types=['text', 'photo'])
         def handle_all(message: telebot.types.Message):
             tid = str(message.from_user.id)
             user = self.user_repo.find_by_telegram_id(tid)
-            
-            # Auto-register user jika belum terdata (untuk bypass start)
             if not user:
                 user = User(id=str(uuid.uuid4()), telegram_id=tid, full_name=message.from_user.first_name or "Warga", username=message.from_user.username or "", created_at=datetime.datetime.now())
                 self.user_repo.save(user)
 
-            # --- ALUR IURAN (STATE MACHINE) ---
             if self.iuran_handler.process(tid, message, user): return
 
             text = message.text or message.caption or ""
 
-            # --- ROUTING MENU UTAMA ---
             if text == "💰 Lapor Iuran":
                 self.iuran_handler.initiate(tid, message)
                 return
@@ -350,31 +346,30 @@ class SATRIAApp:
                 return
 
             elif text == "📋 Lapor Masalah":
-                self.bot.reply_to(message, "Silahkan ketik laporan/keluhan Anda. Sertakan tag `@username` warga yang bersangkutan jika ada masalah spesifik agar diproses sistem.")
+                self.bot.reply_to(message, "Silahkan ketik laporan/keluhan Anda. Sertakan tag `@username` warga yang bersangkutan jika ada masalah spesifik agar ditegur sistem.")
                 return
                 
-            # --- DETEKSI LAPORAN OTOMATIS & BROADCAST GRUP ---
             elif "lapor" in text.lower() or "masalah" in text.lower() or "keluhan" in text.lower():
-                # 1. Simpan ke database laporan
                 report = CitizenReport(str(uuid.uuid4()), user.id, user.full_name, text, datetime.datetime.now())
                 self.report_repo.save(report)
                 
                 self.bot.reply_to(message, "✅ Laporan Anda berhasil dicatat ke sistem dan masuk menu 'Cek Laporan'.")
                 
-                # 2. Broadcast Notifikasi ke Grup Resmi RT
                 if config.group_id:
-                    try: self.bot.send_message(config.group_id, f"📢 *Laporan Warga Masuk*\n*Dari:* {user.full_name}\n*Isi:* {text}", parse_mode="Markdown")
-                    except Exception as e: logger.error(f"Gagal broadcast laporan ke grup: {e}")
+                    try: self.bot.send_message(config.group_id, f"📢 *Laporan Warga Masuk*\n*Dari:* {user.full_name}\n*Isi:* {text}")
+                    except: pass
                 
-                # 3. Jalankan Pemeriksa Tag / Mention
-                self.mention_handler.process_mentions(text, user.full_name)
+                # Eksekusi pengecekan mention di background worker (tidak bikin bot lag)
+                def trigger_mention_ai():
+                    self.mention_handler.process_mentions(text, user.full_name)
+                
+                self.worker.submit(trigger_mention_ai)
                 return
 
-            # --- FALLBACK: AI CHATBOT (Kalau Di-Tag / Chat Private) ---
             bot_me = self.bot.get_me().username
             if (bot_me and f"@{bot_me}" in text) or message.chat.type == "private":
                 def ai_task():
-                    response = self.ai.generate_response(f"Sebagai asisten RT, bantu tanggapi warga ini dengan sopan: {text}")
+                    response = self.ai.generate_response(f"Sebagai asisten RT, jawab keluhan/pertanyaan warga: {text}")
                     self.bot.reply_to(message, response)
                 self.worker.submit(ai_task)
 
