@@ -52,6 +52,7 @@ class KasTransaction:
     kategori: str
     nominal: int
     created_at: datetime.datetime
+    status: str = "Pending" # Status untuk fitur approval
 
 @dataclass(slots=True)
 class CitizenReport:
@@ -62,7 +63,7 @@ class CitizenReport:
     created_at: datetime.datetime
 
 # =====================================================================
-# 3. REPOSITORIES (Database Layer)
+# 3. REPOSITORIES (In-Memory Data)
 # =====================================================================
 class UserRepository:
     def __init__(self):
@@ -91,17 +92,28 @@ class KasRepository:
 
     def save(self, trx: KasTransaction):
         with self._lock: self._db.append(trx)
+        
+    def update_status(self, trx_id: str, new_status: str):
+        with self._lock:
+            for t in self._db:
+                if t.id == trx_id:
+                    t.status = new_status
+                    break
 
     def get_summary(self) -> str:
         with self._lock:
-            if not self._db: return "📉 Data Kas masih kosong."
+            # Hanya hitung yang sudah di-Approve
+            approved_trx = [t for t in self._db if getattr(t, 'status', 'Approved') == 'Approved']
+            if not approved_trx: return "📉 Data Kas (Approved) masih kosong."
+            
             totals = {}
             grand_total = 0
-            for t in self._db:
+            for t in approved_trx:
                 cat = t.kategori.capitalize()
                 totals[cat] = totals.get(cat, 0) + t.nominal
                 grand_total += t.nominal
-            res = "📊 *Laporan Total Kas RT*\n\n"
+            
+            res = "📊 *Laporan Total Kas RT (Approved)*\n\n"
             for cat, amt in totals.items():
                 res += f"🔹 {cat}: Rp {amt:,}\n"
             res += f"\n💰 *Total Seluruh Kas: Rp {grand_total:,}*"
@@ -178,11 +190,29 @@ def get_main_menu():
 # =====================================================================
 # 5. HANDLERS
 # =====================================================================
+class ApprovalHandler:
+    def __init__(self, bot: telebot.TeleBot):
+        self.bot = bot
+
+    def send_approval_request(self, trx_id: str, nama: str, nominal: int):
+        if not config.admin_id: return
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(
+            telebot.types.InlineKeyboardButton("✅ Setuju", callback_data=f"appr_ok_{trx_id}"),
+            telebot.types.InlineKeyboardButton("❌ Tolak", callback_data=f"appr_no_{trx_id}")
+        )
+        self.bot.send_message(
+            config.admin_id, 
+            f"🔔 *Verifikasi Iuran Baru*\n\nNama: {nama}\nNominal: Rp{nominal:,}\nID: `{trx_id}`", 
+            parse_mode="Markdown", reply_markup=markup
+        )
+
 class IuranHandler:
     def __init__(self, bot: telebot.TeleBot, sm: StateMachine, kas_repo: KasRepository):
         self.bot = bot
         self.sm = sm
         self.kas_repo = kas_repo
+        self.approval = ApprovalHandler(bot)
 
     def initiate(self, tid: str, message: telebot.types.Message):
         self.sm.set_state(tid, "flow", "IURAN")
@@ -242,9 +272,14 @@ class IuranHandler:
             kategori = self.sm.get_state(tid, "kategori")
             nominal = self.sm.get_state(tid, "nominal")
             
-            trx = KasTransaction(str(uuid.uuid4()), user.id, nama, kategori, nominal, datetime.datetime.now())
+            trx_id = str(uuid.uuid4())
+            trx = KasTransaction(trx_id, user.id, nama, kategori, nominal, datetime.datetime.now(), "Pending")
             self.kas_repo.save(trx)
             self.sm.clear_state(tid)
+            
+            # TRIGGER APPROVAL KE ADMIN
+            self.approval.send_approval_request(trx_id, nama, nominal)
+            
             self.bot.reply_to(message, f"✅ Data Iuran Tersimpan!\n\nNama: {nama}\nKategori: {kategori}\nNominal: Rp{nominal:,}\n\nMenunggu verifikasi admin.", reply_markup=get_main_menu())
         return True
 
@@ -255,7 +290,6 @@ class MentionHandler:
     def process_mentions(self, text: str, sender_name: str):
         usernames = re.findall(r"@(\w+)", text)
         for uname in usernames:
-            # 1. BUAT AI PROMPT (Pasti jalan tanpa nunggu validasi database)
             prompt = (
                 f"Anda adalah SATRIA, asisten RT. Warga bernama {sender_name} baru saja melaporkan masalah. "
                 f"Dia sengaja mengetag @{uname} sebagai pihak pembuat masalah. "
@@ -265,7 +299,6 @@ class MentionHandler:
             )
             ai_msg = self.ai.generate_response(prompt)
             
-            # 2. SELALU KIRIM KE GRUP (Teguran Terbuka)
             if config.group_id:
                 try: 
                     self.bot.send_message(config.group_id, f"⚠️ *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}", parse_mode="Markdown")
@@ -273,7 +306,6 @@ class MentionHandler:
                 except Exception as e: 
                     logger.error(f"Gagal kirim teguran ke grup: {e}")
 
-            # 3. KIRIM JAPRI HANYA JIKA TARGET SUDAH DAFTAR BOT
             target = self.user_repo.find_by_username(uname)
             if target:
                 try: 
@@ -300,6 +332,20 @@ class SATRIAApp:
         self.mention_handler = MentionHandler(self.ai, self.bot, self.user_repo)
 
     def setup_routes(self):
+        
+        # HANDLER UNTUK CALLBACK APPROVAL ADMIN
+        @self.bot.callback_query_handler(func=lambda call: call.data.startswith("appr_"))
+        def handle_approval(call):
+            action = call.data.split("_")[1]
+            trx_id = call.data.split("_")[2]
+            status = 'Approved' if action == 'ok' else 'Rejected'
+            
+            # Update status di dictionary/memory
+            self.kas_repo.update_status(trx_id, status)
+            
+            pesan = "✅ Iuran Disetujui" if action == 'ok' else "❌ Iuran Ditolak"
+            self.bot.edit_message_text(pesan, call.message.chat.id, call.message.message_id)
+
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: telebot.types.Message):
             tid = str(message.from_user.id)
@@ -312,7 +358,7 @@ class SATRIAApp:
                     created_at=datetime.datetime.now()
                 )
                 self.user_repo.save(user)
-            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v8.1 Aktif.", reply_markup=get_main_menu())
+            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v8.1 Aktif (No Database).", reply_markup=get_main_menu())
 
         @self.bot.message_handler(content_types=['text', 'photo'])
         def handle_all(message: telebot.types.Message):
@@ -359,7 +405,6 @@ class SATRIAApp:
                     try: self.bot.send_message(config.group_id, f"📢 *Laporan Warga Masuk*\n*Dari:* {user.full_name}\n*Isi:* {text}")
                     except: pass
                 
-                # Eksekusi pengecekan mention di background worker (tidak bikin bot lag)
                 def trigger_mention_ai():
                     self.mention_handler.process_mentions(text, user.full_name)
                 
