@@ -4,31 +4,24 @@ from flask import Flask, render_template
 
 app = Flask(__name__)
 
-# Logika pinter nyari database (Local vs Railway)
 def get_db_connection():
+    # Railway Volume Path atau Local Path
     db_path = "/app/data/satria_rt.db" if os.path.exists("/app/data") else "satria_rt.db"
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row # Biar gampang narik data by nama kolom
+    conn = sqlite3.connect(db_path, check_same_thread=False) # check_same_thread=False biar gak crash
+    conn.row_factory = sqlite3.Row
     return conn
 
 @app.route('/')
 def dashboard():
-    conn = get_db_connection()
-    
-    # Ambil data Iuran
-    kas_data = conn.execute('SELECT * FROM kas_transactions ORDER BY created_at DESC LIMIT 10').fetchall()
-    
-    # Ambil data Laporan
-    reports_data = conn.execute('SELECT * FROM citizen_reports ORDER BY created_at DESC LIMIT 10').fetchall()
-    
-    # Hitung Total Kas
-    total_kas_row = conn.execute('SELECT SUM(nominal) FROM kas_transactions').fetchone()
-    total_kas = total_kas_row[0] if total_kas_row[0] else 0
-    
-    conn.close()
-    
-    return render_template('index.html', kas=kas_data, reports=reports_data, total_kas=total_kas)
+    try:
+        conn = get_db_connection()
+        kas = conn.execute('SELECT * FROM kas_transactions ORDER BY created_at DESC LIMIT 10').fetchall()
+        reports = conn.execute('SELECT * FROM citizen_reports ORDER BY created_at DESC LIMIT 10').fetchall()
+        total_kas = conn.execute('SELECT SUM(nominal) FROM kas_transactions').fetchone()[0] or 0
+        conn.close()
+        return render_template('index.html', kas=kas, reports=reports, total_kas=total_kas)
+    except Exception as e:
+        return f"Database Error: {str(e)}", 500
 
 if __name__ == '__main__':
-    # Jalanin server di port 5000
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
