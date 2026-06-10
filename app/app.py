@@ -40,22 +40,85 @@ logging.basicConfig(
 logger = logging.getLogger("SATRIA")
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    env_path = os.path.abspath(path)
+    if not os.path.exists(env_path):
+        return
+
+    with open(env_path, encoding="utf-8") as env_file:
+        for raw_line in env_file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("\'").strip('"')
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv()
+
+
+def _get_env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
+def _get_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Env var %s harus angka. Pakai default %s.", name, default)
+        return default
+
+
+def _build_database_url() -> str:
+    database_url = _get_env("DATABASE_URL", "DB_URL")
+    if database_url.startswith("postgres://"):
+        return "postgresql://" + database_url.removeprefix("postgres://")
+    if database_url:
+        return database_url
+
+    host = os.getenv("PGHOST")
+    user = os.getenv("PGUSER")
+    password = os.getenv("PGPASSWORD")
+    database = os.getenv("PGDATABASE")
+    port = os.getenv("PGPORT", "5432")
+    if all((host, user, password, database)):
+        return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+    return ""
+
+
 # =====================================================================
 # 2. CONFIGURATION
 # =====================================================================
 class Config:
-    bot_token: str = os.getenv("BOT_TOKEN", "")
-    groq_key:  str = os.getenv("GROQ_API_KEY", "")
-    admin_id:  str = str(os.getenv("ADMIN_ID", ""))
-    group_id:  str = str(os.getenv("CHAT_ID_GRUP", ""))
-    db_url:    str = os.getenv("DB_URL", "")
-    port:      int = int(os.getenv("PORT", "8080"))
+    bot_token: str = _get_env("BOT_TOKEN", "TELEGRAM_TOKEN")
+    groq_key: str = _get_env("GROQ_API_KEY", "GROQ_KEY")
+    admin_id: str = _get_env("ADMIN_ID")
+    group_id: str = _get_env("CHAT_ID_GRUP", "GROUP_ID")
+    db_url: str = _build_database_url()
+    port: int = _get_int_env("PORT", 8080)
+    db_pool_min: int = _get_int_env("DB_POOL_MIN", 1)
+    db_pool_max: int = _get_int_env("DB_POOL_MAX", 5)
 
     @classmethod
     def validate(cls):
-        missing = [k for k in ("bot_token", "groq_key", "db_url") if not getattr(cls, k)]
+        env_names = {
+            "bot_token": "BOT_TOKEN/TELEGRAM_TOKEN",
+            "groq_key": "GROQ_API_KEY/GROQ_KEY",
+            "db_url": "DATABASE_URL/DB_URL atau PGHOST+PGUSER+PGPASSWORD+PGDATABASE",
+        }
+        missing = [env_names[k] for k in ("bot_token", "groq_key", "db_url") if not getattr(cls, k)]
         if missing:
-            logger.critical(f"Env var belum di-set: {', '.join(missing).upper()}")
+            logger.critical("Env var belum di-set: %s", ", ".join(missing))
             sys.exit(1)
 
 
@@ -115,7 +178,11 @@ _pool: asyncpg.Pool | None = None
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(Config.db_url, min_size=2, max_size=10)
+        _pool = await asyncpg.create_pool(
+            Config.db_url,
+            min_size=Config.db_pool_min,
+            max_size=Config.db_pool_max,
+        )
     return _pool
 
 
@@ -828,6 +895,10 @@ async def web_dashboard(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+async def health_check(request: web.Request) -> web.Response:
+    return web.json_response({"status": "ok", "service": "satria-rt"})
+
+
 # =====================================================================
 # 11. ENTRYPOINT
 # =====================================================================
@@ -848,6 +919,7 @@ async def main():
 
     web_app = web.Application()
     web_app.router.add_get("/", web_dashboard)
+    web_app.router.add_get("/healthz", health_check)
     runner  = web.AppRunner(web_app)
     await runner.setup()
     site    = web.TCPSite(runner, "0.0.0.0", Config.port)
