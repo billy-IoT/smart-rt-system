@@ -1,35 +1,104 @@
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from flask import Flask, render_template
 
 app = Flask(__name__)
 
-def get_db_connection():
-    db_path = "/app/data/satria_rt.db" if os.path.exists("/app/data") else "satria_rt.db"
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Ambil dari env var Railway — tidak ada hardcode kredensial di sini
+DB_URL = os.getenv("DB_URL", "")
+if not DB_URL:
+    raise RuntimeError("DB_URL belum di-set di environment variables!")
 
-# Fungsi buat mastiin tabel udah ada
+def get_conn():
+    return psycopg2.connect(DB_URL, cursor_factory=RealDictCursor)
+
 def init_db():
-    conn = get_db_connection()
-    conn.execute('''CREATE TABLE IF NOT EXISTS kas_transactions 
-                    (id INTEGER PRIMARY KEY, nama TEXT, kategori TEXT, nominal REAL, created_at TIMESTAMP)''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS citizen_reports 
-                    (id INTEGER PRIMARY KEY, reporter_name TEXT, content TEXT, created_at TIMESTAMP)''')
-    conn.commit()
+    conn = get_conn()
+    with conn:
+        with conn.cursor() as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    telegram_id TEXT UNIQUE,
+                    full_name TEXT,
+                    username TEXT,
+                    created_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS kas_transactions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    nama TEXT,
+                    kategori TEXT,
+                    nominal INTEGER,
+                    created_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS pending_iuran (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    telegram_id TEXT,
+                    nama TEXT,
+                    kategori TEXT,
+                    nominal INTEGER,
+                    photo_file_id TEXT,
+                    status TEXT DEFAULT 'PENDING',
+                    created_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS citizen_reports (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    reporter_name TEXT,
+                    content TEXT,
+                    created_at TIMESTAMPTZ
+                )
+            """)
     conn.close()
+
+init_db()
 
 @app.route('/')
 def dashboard():
-    init_db() # Kita panggil biar dia bikin tabel kalau belum ada
-    conn = get_db_connection()
-    kas = conn.execute('SELECT * FROM kas_transactions ORDER BY created_at DESC LIMIT 10').fetchall()
-    reports = conn.execute('SELECT * FROM citizen_reports ORDER BY created_at DESC LIMIT 10').fetchall()
-    row = conn.execute('SELECT SUM(nominal) FROM kas_transactions').fetchone()
-    total_kas = row[0] if row[0] else 0
+    conn = get_conn()
+    with conn.cursor() as c:
+        c.execute("""
+            SELECT nama, kategori, nominal, created_at
+            FROM kas_transactions
+            ORDER BY created_at DESC LIMIT 10
+        """)
+        kas = c.fetchall()
+
+        c.execute("""
+            SELECT reporter_name, content, created_at
+            FROM citizen_reports
+            ORDER BY created_at DESC LIMIT 10
+        """)
+        reports = c.fetchall()
+
+        c.execute("SELECT SUM(nominal) AS total FROM kas_transactions")
+        row = c.fetchone()
+        total_kas = row["total"] if row["total"] else 0
+
+        c.execute("""
+            SELECT nama, kategori, nominal, created_at
+            FROM pending_iuran
+            WHERE status = 'PENDING'
+            ORDER BY created_at DESC
+        """)
+        pending = c.fetchall()
+
     conn.close()
-    return render_template('index.html', kas=kas, reports=reports, total_kas=total_kas)
+    return render_template('index.html',
+                           kas=kas,
+                           reports=reports,
+                           total_kas=total_kas,
+                           pending=pending)
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
