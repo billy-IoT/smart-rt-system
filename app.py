@@ -9,7 +9,6 @@ import signal
 import sys
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
 import asyncpg
@@ -312,8 +311,6 @@ class AIOrchestrator:
 # 7. STATE MACHINE
 # =====================================================================
 class StateMachine:
-    """Per-user conversation state stored in memory."""
-
     def __init__(self):
         self._states: dict[str, dict[str, Any]] = {}
 
@@ -351,9 +348,6 @@ class BotHandlers:
         self.ai           = AIOrchestrator(Config.groq_key)
         self.sm           = StateMachine()
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     async def _get_or_create_user(self, from_user) -> User:
         tid  = str(from_user.id)
         user = await self.user_repo.find_by_telegram_id(tid)
@@ -368,9 +362,6 @@ class BotHandlers:
             await self.user_repo.save(user)
         return user
 
-    # ------------------------------------------------------------------
-    # /start
-    # ------------------------------------------------------------------
     async def cmd_start(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await self._get_or_create_user(update.effective_user)
         await update.message.reply_text(
@@ -379,9 +370,6 @@ class BotHandlers:
             reply_markup=main_menu(),
         )
 
-    # ------------------------------------------------------------------
-    # Callback: APPROVE / REJECT
-    # ------------------------------------------------------------------
     async def handle_callback(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         call = update.callback_query
         await call.answer()
@@ -416,7 +404,7 @@ class BotHandlers:
             )
             await self.kas_repo.save(trx)
             await self.pending_repo.update_status(pending_id, "APPROVED")
-            suffix = "\n\n✅ *DISETUJUI*"
+            suffix    = "\n\n✅ *DISETUJUI*"
             warga_msg = (
                 f"🎉 *Iuran Anda Telah Diverifikasi!*\n\n"
                 f"📋 Nama     : {pending.nama}\n"
@@ -426,7 +414,7 @@ class BotHandlers:
             )
         else:
             await self.pending_repo.update_status(pending_id, "REJECTED")
-            suffix = "\n\n❌ *DITOLAK*"
+            suffix    = "\n\n❌ *DITOLAK*"
             warga_msg = (
                 f"❌ *Iuran Anda Ditolak oleh Admin*\n\n"
                 f"📋 Nama     : {pending.nama}\n"
@@ -435,7 +423,6 @@ class BotHandlers:
                 f"Silahkan hubungi pengurus RT untuk informasi lebih lanjut."
             )
 
-        # Edit caption di pesan admin
         try:
             await call.edit_message_caption(
                 caption    = (call.message.caption or "") + suffix,
@@ -444,7 +431,6 @@ class BotHandlers:
         except Exception:
             pass
 
-        # Notif ke warga
         try:
             await ctx.bot.send_message(pending.telegram_id, warga_msg, parse_mode="Markdown")
         except Exception as e:
@@ -452,9 +438,6 @@ class BotHandlers:
 
         logger.info(f"Approval selesai: id={pending_id}, action={action}")
 
-    # ------------------------------------------------------------------
-    # Iuran Flow
-    # ------------------------------------------------------------------
     async def _iuran_initiate(self, tid: str, update: Update):
         self.sm.set(tid, "flow", "IURAN")
         self.sm.set(tid, "step", "NAMA")
@@ -465,7 +448,6 @@ class BotHandlers:
         )
 
     async def _iuran_process(self, tid: str, update: Update, user: User) -> bool:
-        """Return True jika pesan ditangani oleh flow iuran."""
         if self.sm.get(tid, "flow") != "IURAN":
             return False
 
@@ -582,9 +564,6 @@ class BotHandlers:
         except Exception as e:
             logger.error(f"Gagal kirim notif admin: {e}")
 
-    # ------------------------------------------------------------------
-    # Main message handler
-    # ------------------------------------------------------------------
     async def handle_message(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not update.message:
             return
@@ -592,7 +571,6 @@ class BotHandlers:
         tid  = str(update.effective_user.id)
         user = await self._get_or_create_user(update.effective_user)
 
-        # Cek apakah sedang dalam flow iuran
         if await self._iuran_process(tid, update, user):
             return
 
@@ -644,13 +622,11 @@ class BotHandlers:
                 except Exception:
                     pass
 
-            # Proses mention di background
             asyncio.create_task(
                 self._process_mentions(text, user.full_name, update)
             )
 
         else:
-            # Jawab dengan AI jika di-mention / private chat
             bot_user = await ctx.bot.get_me()
             if (bot_user.username and f"@{bot_user.username}" in text) \
                     or update.message.chat.type == "private":
@@ -695,6 +671,97 @@ class BotHandlers:
                     logger.error(f"Gagal japri target: {e}")
 
 
+# =====================================================================
+# 10. WEB DASHBOARD  (aiohttp)
+# =====================================================================
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SATRIA RT — Dashboard</title>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      min-height: 100vh; padding: 2rem 1rem;
+    }}
+    header {{ text-align: center; margin-bottom: 2rem; }}
+    header h1 {{ font-size: 2rem; color: #38bdf8; letter-spacing: .05em; }}
+    header p  {{ color: #94a3b8; margin-top: .25rem; }}
+    .stats {{
+      display: flex; gap: 1rem; flex-wrap: wrap;
+      justify-content: center; margin-bottom: 2rem;
+    }}
+    .stat-card {{
+      background: #1e293b; border-radius: 12px;
+      padding: 1.25rem 2rem; text-align: center; flex: 1; min-width: 160px;
+    }}
+    .stat-card .label {{ font-size: .75rem; color: #64748b; text-transform: uppercase; }}
+    .stat-card .value {{ font-size: 1.75rem; font-weight: 700; color: #38bdf8; }}
+    .grid {{
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem; max-width: 1200px; margin: 0 auto;
+    }}
+    section {{ background: #1e293b; border-radius: 12px; padding: 1.5rem; }}
+    section h2 {{
+      font-size: 1rem; font-weight: 600; color: #7dd3fc;
+      border-bottom: 1px solid #334155; padding-bottom: .75rem; margin-bottom: 1rem;
+    }}
+    table {{ width: 100%; border-collapse: collapse; font-size: .875rem; }}
+    th {{ color: #64748b; text-align: left; padding: .5rem .75rem; font-weight: 500; }}
+    td {{ padding: .5rem .75rem; border-top: 1px solid #1e293b; }}
+    tr:nth-child(even) td {{ background: rgba(15,23,42,.2); }}
+    .badge {{
+      display: inline-block; padding: .2rem .55rem; border-radius: 9999px;
+      font-size: .7rem; font-weight: 600;
+    }}
+    .badge-pending  {{ background: #78350f; color: #fcd34d; }}
+    .badge-approved {{ background: #14532d; color: #86efac; }}
+    .badge-rejected {{ background: #7f1d1d; color: #fca5a5; }}
+    .empty {{ color: #64748b; text-align: center; padding: 1.5rem; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏘️ SATRIA RT Dashboard</h1>
+    <p>Sistem Administrasi Terpadu RT Digital</p>
+  </header>
+  <div class="stats">
+    <div class="stat-card">
+      <div class="label">Total Kas</div>
+      <div class="value">Rp {total_kas:,}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Transaksi</div>
+      <div class="value">{jumlah_trx}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Laporan</div>
+      <div class="value">{jumlah_laporan}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Pending</div>
+      <div class="value">{jumlah_pending}</div>
+    </div>
+  </div>
+  <div class="grid">
+    <section>
+      <h2>💰 Transaksi Kas Terbaru</h2>
+      {tabel_kas}
+    </section>
+    <section>
+      <h2>📋 Laporan Warga Terbaru</h2>
+      {tabel_laporan}
+    </section>
+    <section>
+      <h2>⏳ Iuran Pending Verifikasi</h2>
+      {tabel_pending}
+    </section>
+  </div>
+</body>
+</html>"""
 
 
 def _rows_to_kas_table(rows) -> str:
@@ -750,13 +817,13 @@ async def web_dashboard(request: web.Request) -> web.Response:
         )
 
     html = HTML_TEMPLATE.format(
-        total_kas     = total or 0,
-        jumlah_trx    = len(kas),
-        jumlah_laporan= len(reports),
-        jumlah_pending= sum(1 for r in pending if r["status"] == "PENDING"),
-        tabel_kas     = _rows_to_kas_table(kas),
-        tabel_laporan = _rows_to_report_table(reports),
-        tabel_pending = _rows_to_pending_table(pending),
+        total_kas      = total or 0,
+        jumlah_trx     = len(kas),
+        jumlah_laporan = len(reports),
+        jumlah_pending = sum(1 for r in pending if r["status"] == "PENDING"),
+        tabel_kas      = _rows_to_kas_table(kas),
+        tabel_laporan  = _rows_to_report_table(reports),
+        tabel_pending  = _rows_to_pending_table(pending),
     )
     return web.Response(text=html, content_type="text/html")
 
@@ -765,47 +832,42 @@ async def web_dashboard(request: web.Request) -> web.Response:
 # 11. ENTRYPOINT
 # =====================================================================
 async def main():
-    # DB
     await init_database()
 
-    # Telegram bot
     handlers = BotHandlers()
-    app = (
+    tg_app = (
         Application.builder()
         .token(Config.bot_token)
         .build()
     )
-    app.add_handler(CommandHandler("start", handlers.cmd_start))
-    app.add_handler(CallbackQueryHandler(handlers.handle_callback))
-    app.add_handler(
+    tg_app.add_handler(CommandHandler("start", handlers.cmd_start))
+    tg_app.add_handler(CallbackQueryHandler(handlers.handle_callback))
+    tg_app.add_handler(
         MessageHandler(filters.TEXT | filters.PHOTO, handlers.handle_message)
     )
 
-    # aiohttp web
-    web_app  = web.Application()
+    web_app = web.Application()
     web_app.router.add_get("/", web_dashboard)
-    runner   = web.AppRunner(web_app)
+    runner  = web.AppRunner(web_app)
     await runner.setup()
-    site     = web.TCPSite(runner, "0.0.0.0", Config.port)
+    site    = web.TCPSite(runner, "0.0.0.0", Config.port)
     await site.start()
     logger.info(f"Dashboard berjalan di http://0.0.0.0:{Config.port}")
 
-    # Shutdown handling
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop_event.set)
 
-    # Jalankan bot polling + web server bersamaan
-    async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
+    async with tg_app:
+        await tg_app.initialize()
+        await tg_app.start()
+        await tg_app.updater.start_polling(drop_pending_updates=True)
         logger.info("SATRIA polling dimulai. Ctrl+C untuk berhenti.")
         await stop_event.wait()
-        logger.info("Shutdown…")
-        await app.updater.stop()
-        await app.stop()
+        logger.info("Shutdown...")
+        await tg_app.updater.stop()
+        await tg_app.stop()
 
     await runner.cleanup()
     if _pool:
@@ -814,6 +876,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main()                ) 
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    asyncio.run(main())
