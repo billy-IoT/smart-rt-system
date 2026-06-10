@@ -1,4 +1,4 @@
-pyTelegramBotAPI
-groq
-psycopg2-binary
-flask
+python-telegram-bot==20.7
+asyncpg==0.29.0
+aiohttp==3.9.5
+groq==0.9.0
