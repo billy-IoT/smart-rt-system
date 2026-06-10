@@ -1,5 +1,4 @@
 pyTelegramBotAPI
 groq
-Flask
-requests
-pytz
+psycopg2-binary
+flask
