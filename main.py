@@ -8,6 +8,7 @@ import logging
 import signal
 import sys
 import queue
+import sqlite3
 from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass
 
@@ -26,6 +27,14 @@ class ConfigurationManager:
         self.groq_key = os.getenv("GROQ_API_KEY", "")
         self.admin_id = str(os.getenv("ADMIN_ID", ""))
         self.group_id = str(os.getenv("CHAT_ID_GRUP", ""))
+        
+        # LOGIKA PATH DATABASE UNTUK RAILWAY & LOCAL
+        if os.path.exists("/app/data"):
+            self.db_name = "/app/data/satria_rt.db"
+            logger.info("Railway Volume detected. Using /app/data/satria_rt.db")
+        else:
+            self.db_name = "satria_rt.db"
+            logger.info("Local environment detected. Using local satria_rt.db")
         
         if not self.bot_token or not self.groq_key:
             logger.critical("BOT_TOKEN atau GROQ_API_KEY belum di-set di env!")
@@ -62,64 +71,164 @@ class CitizenReport:
     created_at: datetime.datetime
 
 # =====================================================================
-# 3. REPOSITORIES (Database Layer)
+# 3. DATABASE INITIALIZER (SQLite Migration)
+# =====================================================================
+def init_database():
+    """Membuat tabel database secara fisik jika belum tersedia."""
+    conn = sqlite3.connect(config.db_name)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            telegram_id TEXT UNIQUE,
+            full_name TEXT,
+            username TEXT,
+            created_at TEXT
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kas_transactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            nama TEXT,
+            kategori TEXT,
+            nominal INTEGER,
+            created_at TEXT
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS citizen_reports (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            reporter_name TEXT,
+            content TEXT,
+            created_at TEXT
+        )
+    """)
+    
+    conn.commit()
+    conn.close()
+    logger.info("SQLite Database initialized successfully.")
+
+# Initialize immediately on startup
+init_database()
+
+# =====================================================================
+# 4. REPOSITORIES (Database Read/Write Layer)
 # =====================================================================
 class UserRepository:
     def __init__(self):
-        self._db: Dict[str, User] = {}
         self._lock = threading.RLock()
 
     def save(self, user: User):
-        with self._lock: self._db[user.id] = user
+        with self._lock:
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (id, telegram_id, full_name, username, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    full_name=excluded.full_name,
+                    username=excluded.username
+            """, (user.id, user.telegram_id, user.full_name, user.username, user.created_at.isoformat()))
+            conn.commit()
+            conn.close()
 
     def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
         with self._lock:
-            for u in self._db.values():
-                if u.telegram_id == str(telegram_id): return u
-        return None
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, telegram_id, full_name, username, created_at FROM users WHERE telegram_id = ?", (str(telegram_id),))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return User(row[0], row[1], row[2], row[3], datetime.datetime.fromisoformat(row[4]))
+            return None
 
     def find_by_username(self, username: str) -> Optional[User]:
         with self._lock:
-            for u in self._db.values():
-                if u.username and u.username.lower() == username.lower(): return u
-        return None
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, telegram_id, full_name, username, created_at FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return User(row[0], row[1], row[2], row[3], datetime.datetime.fromisoformat(row[4]))
+            return None
 
 class KasRepository:
     def __init__(self):
-        self._db: List[KasTransaction] = []
         self._lock = threading.RLock()
 
     def save(self, trx: KasTransaction):
-        with self._lock: self._db.append(trx)
+        with self._lock:
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO kas_transactions (id, user_id, nama, kategori, nominal, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (trx.id, trx.user_id, trx.nama, trx.kategori, trx.nominal, trx.created_at.isoformat()))
+            conn.commit()
+            conn.close()
 
     def get_summary(self) -> str:
         with self._lock:
-            if not self._db: return "📉 Data Kas masih kosong."
-            totals = {}
-            grand_total = 0
-            for t in self._db:
-                cat = t.kategori.capitalize()
-                totals[cat] = totals.get(cat, 0) + t.nominal
-                grand_total += t.nominal
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("SELECT kategori, SUM(nominal) FROM kas_transactions GROUP BY kategori")
+            rows = cursor.fetchall()
+            
+            cursor.execute("SELECT SUM(nominal) FROM kas_transactions")
+            grand_total_row = cursor.fetchone()
+            grand_total = grand_total_row[0] if grand_total_row[0] else 0
+            conn.close()
+            
+            if not rows: 
+                return "📉 Data Kas masih kosong."
+                
             res = "📊 *Laporan Total Kas RT*\n\n"
-            for cat, amt in totals.items():
+            for row in rows:
+                cat = row[0].capitalize()
+                amt = row[1]
                 res += f"🔹 {cat}: Rp {amt:,}\n"
             res += f"\n💰 *Total Seluruh Kas: Rp {grand_total:,}*"
             return res
 
 class ReportRepository:
     def __init__(self):
-        self._db: List[CitizenReport] = []
         self._lock = threading.RLock()
 
     def save(self, report: CitizenReport):
-        with self._lock: self._db.append(report)
+        with self._lock:
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO citizen_reports (id, user_id, reporter_name, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (report.id, report.user_id, report.reporter_name, report.content, report.created_at.isoformat()))
+            conn.commit()
+            conn.close()
 
     def get_all(self) -> List[CitizenReport]:
-        with self._lock: return list(self._db)
+        with self._lock:
+            conn = sqlite3.connect(config.db_name)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, reporter_name, content, created_at FROM citizen_reports ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            conn.close()
+            
+            reports = []
+            for row in rows:
+                reports.append(CitizenReport(row[0], row[1], row[2], row[3], datetime.datetime.fromisoformat(row[4])))
+            return reports
 
 # =====================================================================
-# 4. SERVICES
+# 5. CORE SERVICES
 # =====================================================================
 class AIOrchestrator:
     def __init__(self, api_key: str):
@@ -130,7 +239,7 @@ class AIOrchestrator:
             response = self.client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": "Anda adalah SATRIA, asisten RT digital yang tegas, tertib, dan solutif."},
+                    {"role": "system", "content": "Anda adalah SATRIA, asisten RT digital yang cerdas, tegas, dan solutif."},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -176,7 +285,7 @@ def get_main_menu():
     return kb
 
 # =====================================================================
-# 5. HANDLERS
+# 6. HANDLERS
 # =====================================================================
 class IuranHandler:
     def __init__(self, bot: telebot.TeleBot, sm: StateMachine, kas_repo: KasRepository):
@@ -255,7 +364,6 @@ class MentionHandler:
     def process_mentions(self, text: str, sender_name: str):
         usernames = re.findall(r"@(\w+)", text)
         for uname in usernames:
-            # 1. BUAT AI PROMPT (Pasti jalan tanpa nunggu validasi database)
             prompt = (
                 f"Anda adalah SATRIA, asisten RT. Warga bernama {sender_name} baru saja melaporkan masalah. "
                 f"Dia sengaja mengetag @{uname} sebagai pihak pembuat masalah. "
@@ -265,7 +373,6 @@ class MentionHandler:
             )
             ai_msg = self.ai.generate_response(prompt)
             
-            # 2. SELALU KIRIM KE GRUP (Teguran Terbuka)
             if config.group_id:
                 try: 
                     self.bot.send_message(config.group_id, f"⚠️ *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}", parse_mode="Markdown")
@@ -273,7 +380,6 @@ class MentionHandler:
                 except Exception as e: 
                     logger.error(f"Gagal kirim teguran ke grup: {e}")
 
-            # 3. KIRIM JAPRI HANYA JIKA TARGET SUDAH DAFTAR BOT
             target = self.user_repo.find_by_username(uname)
             if target:
                 try: 
@@ -284,7 +390,7 @@ class MentionHandler:
                 logger.info(f"@{uname} belum terdaftar di database bot, skip Japri.")
 
 # =====================================================================
-# 6. APPLICATION FACTORY
+# 7. APPLICATION FACTORY
 # =====================================================================
 class SATRIAApp:
     def __init__(self):
@@ -312,7 +418,7 @@ class SATRIAApp:
                     created_at=datetime.datetime.now()
                 )
                 self.user_repo.save(user)
-            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v8.1 Aktif.", reply_markup=get_main_menu())
+            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v9.1 Aktif.", reply_markup=get_main_menu())
 
         @self.bot.message_handler(content_types=['text', 'photo'])
         def handle_all(message: telebot.types.Message):
@@ -359,7 +465,6 @@ class SATRIAApp:
                     try: self.bot.send_message(config.group_id, f"📢 *Laporan Warga Masuk*\n*Dari:* {user.full_name}\n*Isi:* {text}")
                     except: pass
                 
-                # Eksekusi pengecekan mention di background worker (tidak bikin bot lag)
                 def trigger_mention_ai():
                     self.mention_handler.process_mentions(text, user.full_name)
                 
