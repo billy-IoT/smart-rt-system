@@ -910,7 +910,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main()                )
-            """)
+        
             c.execute("""
                 CREATE TABLE IF NOT EXISTS pending_iuran (
                     id TEXT PRIMARY KEY,
