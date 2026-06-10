@@ -428,6 +428,12 @@ class SATRIAApp:
         self.bot.infinity_polling(skip_pending=True)
 
 if __name__ == "__main__":
+    # Tambahan pengecekan biar gak crash kalau kosong
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        logger.critical("BOT_TOKEN KOSONG! Cek variabel di Railway.")
+        sys.exit(1)
+        
     app = SATRIAApp()
     app.setup_routes()
     app.run()
