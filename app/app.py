@@ -6,9 +6,11 @@ import logging
 import os
 import re
 import signal
+from html import escape
 import sys
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 import asyncpg
@@ -741,156 +743,82 @@ class BotHandlers:
 # =====================================================================
 # 10. WEB DASHBOARD  (aiohttp)
 # =====================================================================
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="id">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SATRIA RT — Dashboard</title>
-  <style>
-    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #0f172a; color: #e2e8f0;
-      min-height: 100vh; padding: 2rem 1rem;
-    }}
-    header {{ text-align: center; margin-bottom: 2rem; }}
-    header h1 {{ font-size: 2rem; color: #38bdf8; letter-spacing: .05em; }}
-    header p  {{ color: #94a3b8; margin-top: .25rem; }}
-    .stats {{
-      display: flex; gap: 1rem; flex-wrap: wrap;
-      justify-content: center; margin-bottom: 2rem;
-    }}
-    .stat-card {{
-      background: #1e293b; border-radius: 12px;
-      padding: 1.25rem 2rem; text-align: center; flex: 1; min-width: 160px;
-    }}
-    .stat-card .label {{ font-size: .75rem; color: #64748b; text-transform: uppercase; }}
-    .stat-card .value {{ font-size: 1.75rem; font-weight: 700; color: #38bdf8; }}
-    .grid {{
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 1.5rem; max-width: 1200px; margin: 0 auto;
-    }}
-    section {{ background: #1e293b; border-radius: 12px; padding: 1.5rem; }}
-    section h2 {{
-      font-size: 1rem; font-weight: 600; color: #7dd3fc;
-      border-bottom: 1px solid #334155; padding-bottom: .75rem; margin-bottom: 1rem;
-    }}
-    table {{ width: 100%; border-collapse: collapse; font-size: .875rem; }}
-    th {{ color: #64748b; text-align: left; padding: .5rem .75rem; font-weight: 500; }}
-    td {{ padding: .5rem .75rem; border-top: 1px solid #1e293b; }}
-    tr:nth-child(even) td {{ background: rgba(15,23,42,.2); }}
-    .badge {{
-      display: inline-block; padding: .2rem .55rem; border-radius: 9999px;
-      font-size: .7rem; font-weight: 600;
-    }}
-    .badge-pending  {{ background: #78350f; color: #fcd34d; }}
-    .badge-approved {{ background: #14532d; color: #86efac; }}
-    .badge-rejected {{ background: #7f1d1d; color: #fca5a5; }}
-    .empty {{ color: #64748b; text-align: center; padding: 1.5rem; }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>🏘️ SATRIA RT Dashboard</h1>
-    <p>Sistem Administrasi Terpadu RT Digital</p>
-  </header>
-  <div class="stats">
-    <div class="stat-card">
-      <div class="label">Total Kas</div>
-      <div class="value">Rp {total_kas:,}</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Transaksi</div>
-      <div class="value">{jumlah_trx}</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Laporan</div>
-      <div class="value">{jumlah_laporan}</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">Pending</div>
-      <div class="value">{jumlah_pending}</div>
-    </div>
-  </div>
-  <div class="grid">
-    <section>
-      <h2>💰 Transaksi Kas Terbaru</h2>
-      {tabel_kas}
-    </section>
-    <section>
-      <h2>📋 Laporan Warga Terbaru</h2>
-      {tabel_laporan}
-    </section>
-    <section>
-      <h2>⏳ Iuran Pending Verifikasi</h2>
-      {tabel_pending}
-    </section>
-  </div>
-</body>
-</html>"""
+BASE_DIR = Path(__file__).resolve().parent.parent
+TEMPLATE_PATH = BASE_DIR / "templates" / "index.html"
 
 
-def _rows_to_kas_table(rows) -> str:
-    if not rows:
-        return '<p class="empty">Belum ada transaksi.</p>'
-    out = "<table><thead><tr><th>Nama</th><th>Kategori</th><th>Nominal</th><th>Tanggal</th></tr></thead><tbody>"
-    for r in rows:
-        tgl = r["created_at"].strftime("%d/%m/%Y") if r["created_at"] else "-"
-        out += f"<tr><td>{r['nama']}</td><td>{r['kategori']}</td><td>Rp {r['nominal']:,}</td><td>{tgl}</td></tr>"
-    out += "</tbody></table>"
-    return out
+def _format_rupiah(value: int | float | None) -> str:
+    return f"{value or 0:,.0f}"
 
 
-def _rows_to_report_table(rows) -> str:
-    if not rows:
-        return '<p class="empty">Belum ada laporan.</p>'
-    out = "<table><thead><tr><th>Pelapor</th><th>Isi</th><th>Tanggal</th></tr></thead><tbody>"
-    for r in rows:
-        tgl     = r["created_at"].strftime("%d/%m/%Y") if r["created_at"] else "-"
-        content = str(r["content"])[:60] + ("…" if len(str(r["content"])) > 60 else "")
-        out += f"<tr><td>{r['reporter_name']}</td><td>{content}</td><td>{tgl}</td></tr>"
-    out += "</tbody></table>"
-    return out
+def _render_report_cards(reports) -> str:
+    if not reports:
+        return '<p class="text-sm text-slate-500">Belum ada laporan terbaru.</p>'
+
+    cards = []
+    for report in reports:
+        cards.append(
+            '<div class="bg-slate-800 p-3 rounded-lg border border-slate-700">'
+            f'<p class="font-bold text-sm text-orange-200">{escape(str(report["reporter_name"] or "-"))}</p>'
+            f'<p class="text-xs text-slate-300">{escape(str(report["content"] or ""))}</p>'
+            '</div>'
+        )
+    return "".join(cards)
 
 
-def _rows_to_pending_table(rows) -> str:
-    if not rows:
-        return '<p class="empty">Tidak ada iuran pending.</p>'
-    out = "<table><thead><tr><th>Nama</th><th>Kategori</th><th>Nominal</th><th>Status</th></tr></thead><tbody>"
-    for r in rows:
-        st  = r["status"].upper()
-        cls = {"PENDING": "badge-pending", "APPROVED": "badge-approved",
-               "REJECTED": "badge-rejected"}.get(st, "badge-pending")
-        out += (f"<tr><td>{r['nama']}</td><td>{r['kategori']}</td>"
-                f"<td>Rp {r['nominal']:,}</td>"
-                f'<td><span class="badge {cls}">{st}</span></td></tr>')
-    out += "</tbody></table>"
-    return out
+def _render_kas_rows(kas) -> str:
+    if not kas:
+        return (
+            '<tr class="border-b border-slate-700">'
+            '<td colspan="3" class="py-3 text-center text-slate-500">Belum ada riwayat iuran.</td>'
+            '</tr>'
+        )
+
+    rows = []
+    for trx in kas:
+        rows.append(
+            '<tr class="border-b border-slate-700">'
+            f'<td class="py-3">{escape(str(trx["nama"] or "-"))}</td>'
+            f'<td class="py-3 text-xs">{escape(str(trx["kategori"] or "-"))}</td>'
+            f'<td class="py-3 text-teal-400 font-bold">Rp {_format_rupiah(trx["nominal"])}</td>'
+            '</tr>'
+        )
+    return "".join(rows)
+
+
+def render_dashboard_template(*, total_kas: int, reports, kas) -> str:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    html = template.replace('{{ "{:,.0f}".format(total_kas) }}', _format_rupiah(total_kas))
+    html = re.sub(
+        r"\s*{% for r in reports %}.*?{% endfor %}",
+        "\n" + _render_report_cards(reports),
+        html,
+        flags=re.DOTALL,
+    )
+    html = re.sub(
+        r"\s*{% for k in kas %}.*?{% endfor %}",
+        "\n" + _render_kas_rows(kas),
+        html,
+        flags=re.DOTALL,
+    )
+    return html
 
 
 async def web_dashboard(request: web.Request) -> web.Response:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        kas     = await conn.fetch(
+        kas = await conn.fetch(
             "SELECT nama, kategori, nominal, created_at FROM kas_transactions ORDER BY created_at DESC LIMIT 10"
         )
         reports = await conn.fetch(
             "SELECT reporter_name, content, created_at FROM citizen_reports ORDER BY created_at DESC LIMIT 10"
         )
-        total   = await conn.fetchval("SELECT COALESCE(SUM(nominal),0) FROM kas_transactions")
-        pending = await conn.fetch(
-            "SELECT nama, kategori, nominal, status, created_at FROM pending_iuran ORDER BY created_at DESC LIMIT 20"
-        )
+        total = await conn.fetchval("SELECT COALESCE(SUM(nominal),0) FROM kas_transactions")
 
-    html = HTML_TEMPLATE.format(
-        total_kas      = total or 0,
-        jumlah_trx     = len(kas),
-        jumlah_laporan = len(reports),
-        jumlah_pending = sum(1 for r in pending if r["status"] == "PENDING"),
-        tabel_kas      = _rows_to_kas_table(kas),
-        tabel_laporan  = _rows_to_report_table(reports),
-        tabel_pending  = _rows_to_pending_table(pending),
+    html = render_dashboard_template(
+        total_kas=total or 0,
+        reports=reports,
+        kas=kas,
     )
     return web.Response(text=html, content_type="text/html")
 
