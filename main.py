@@ -8,7 +8,6 @@ import logging
 import signal
 import sys
 import queue
-import psycopg2
 from typing import Any, Dict, List, Optional, Callable
 from dataclasses import dataclass
 
@@ -28,17 +27,11 @@ class ConfigurationManager:
         self.admin_id = str(os.getenv("ADMIN_ID", ""))
         self.group_id = str(os.getenv("CHAT_ID_GRUP", ""))
         
-        # POSTGRESQL SATU ENV SAJA (DATABASE_URL)
-        self.db_url = os.getenv("DATABASE_URL", "")
-        
-        if not self.bot_token or not self.groq_key or not self.db_url:
-            logger.critical("Pastikan BOT_TOKEN, GROQ_API_KEY, dan DATABASE_URL sudah di-set di env!")
+        if not self.bot_token or not self.groq_key:
+            logger.critical("BOT_TOKEN atau GROQ_API_KEY belum di-set di env!")
             sys.exit(1)
 
 config = ConfigurationManager()
-
-def get_db_connection():
-    return psycopg2.connect(config.db_url)
 
 # =====================================================================
 # 2. DATA MODELS
@@ -59,7 +52,6 @@ class KasTransaction:
     kategori: str
     nominal: int
     created_at: datetime.datetime
-    status: str = "Pending"
 
 @dataclass(slots=True)
 class CitizenReport:
@@ -70,143 +62,64 @@ class CitizenReport:
     created_at: datetime.datetime
 
 # =====================================================================
-# 3. DATABASE INITIALIZER (PostgreSQL)
-# =====================================================================
-def init_database():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id VARCHAR PRIMARY KEY,
-            telegram_id VARCHAR UNIQUE,
-            full_name VARCHAR,
-            username VARCHAR,
-            created_at TIMESTAMP
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS kas_transactions (
-            id VARCHAR PRIMARY KEY,
-            user_id VARCHAR,
-            nama VARCHAR,
-            kategori VARCHAR,
-            nominal INTEGER,
-            created_at TIMESTAMP,
-            status VARCHAR
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS citizen_reports (
-            id VARCHAR PRIMARY KEY,
-            user_id VARCHAR,
-            reporter_name VARCHAR,
-            content TEXT,
-            created_at TIMESTAMP
-        )
-    """)
-    
-    conn.commit()
-    cursor.close()
-    conn.close()
-    logger.info("PostgreSQL Database initialized successfully.")
-
-init_database()
-
-# =====================================================================
-# 4. REPOSITORIES (PostgreSQL Read/Write Layer)
+# 3. REPOSITORIES (Database Layer)
 # =====================================================================
 class UserRepository:
+    def __init__(self):
+        self._db: Dict[str, User] = {}
+        self._lock = threading.RLock()
+
     def save(self, user: User):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO users (id, telegram_id, full_name, username, created_at)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (telegram_id) DO UPDATE SET
-                full_name = EXCLUDED.full_name,
-                username = EXCLUDED.username
-        """, (user.id, user.telegram_id, user.full_name, user.username, user.created_at))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        with self._lock: self._db[user.id] = user
 
     def find_by_telegram_id(self, telegram_id: str) -> Optional[User]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, telegram_id, full_name, username, created_at FROM users WHERE telegram_id = %s", (str(telegram_id),))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if row: return User(*row)
+        with self._lock:
+            for u in self._db.values():
+                if u.telegram_id == str(telegram_id): return u
         return None
 
     def find_by_username(self, username: str) -> Optional[User]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, telegram_id, full_name, username, created_at FROM users WHERE LOWER(username) = LOWER(%s)", (username,))
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if row: return User(*row)
+        with self._lock:
+            for u in self._db.values():
+                if u.username and u.username.lower() == username.lower(): return u
         return None
 
 class KasRepository:
+    def __init__(self):
+        self._db: List[KasTransaction] = []
+        self._lock = threading.RLock()
+
     def save(self, trx: KasTransaction):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO kas_transactions (id, user_id, nama, kategori, nominal, created_at, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (trx.id, trx.user_id, trx.nama, trx.kategori, trx.nominal, trx.created_at, trx.status))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        with self._lock: self._db.append(trx)
 
     def get_summary(self) -> str:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT kategori, SUM(nominal) FROM kas_transactions WHERE status = 'Approved' GROUP BY kategori")
-        rows = cursor.fetchall()
-        
-        cursor.execute("SELECT SUM(nominal) FROM kas_transactions WHERE status = 'Approved'")
-        grand_total_row = cursor.fetchone()
-        grand_total = grand_total_row[0] if grand_total_row and grand_total_row[0] else 0
-        
-        cursor.close()
-        conn.close()
-        
-        if not rows: return "📉 Data Kas (Approved) masih kosong."
-            
-        res = "📊 *Laporan Total Kas RT (Approved)*\n\n"
-        for row in rows:
-            res += f"🔹 {row[0].capitalize()}: Rp {row[1]:,}\n"
-        res += f"\n💰 *Total Seluruh Kas: Rp {grand_total:,}*"
-        return res
+        with self._lock:
+            if not self._db: return "📉 Data Kas masih kosong."
+            totals = {}
+            grand_total = 0
+            for t in self._db:
+                cat = t.kategori.capitalize()
+                totals[cat] = totals.get(cat, 0) + t.nominal
+                grand_total += t.nominal
+            res = "📊 *Laporan Total Kas RT*\n\n"
+            for cat, amt in totals.items():
+                res += f"🔹 {cat}: Rp {amt:,}\n"
+            res += f"\n💰 *Total Seluruh Kas: Rp {grand_total:,}*"
+            return res
 
 class ReportRepository:
+    def __init__(self):
+        self._db: List[CitizenReport] = []
+        self._lock = threading.RLock()
+
     def save(self, report: CitizenReport):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO citizen_reports (id, user_id, reporter_name, content, created_at)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (report.id, report.user_id, report.reporter_name, report.content, report.created_at))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        with self._lock: self._db.append(report)
 
     def get_all(self) -> List[CitizenReport]:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, user_id, reporter_name, content, created_at FROM citizen_reports ORDER BY created_at DESC")
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
-        return [CitizenReport(*row) for row in rows]
+        with self._lock: return list(self._db)
 
 # =====================================================================
-# 5. CORE SERVICES
+# 4. SERVICES
 # =====================================================================
 class AIOrchestrator:
     def __init__(self, api_key: str):
@@ -263,31 +176,13 @@ def get_main_menu():
     return kb
 
 # =====================================================================
-# 6. HANDLERS
+# 5. HANDLERS
 # =====================================================================
-class ApprovalHandler:
-    def __init__(self, bot: telebot.TeleBot):
-        self.bot = bot
-
-    def send_approval_request(self, trx_id: str, nama: str, nominal: int):
-        if not config.admin_id: return
-        markup = telebot.types.InlineKeyboardMarkup()
-        markup.add(
-            telebot.types.InlineKeyboardButton("✅ Setuju", callback_data=f"appr_ok_{trx_id}"),
-            telebot.types.InlineKeyboardButton("❌ Tolak", callback_data=f"appr_no_{trx_id}")
-        )
-        self.bot.send_message(
-            config.admin_id, 
-            f"🔔 *Verifikasi Iuran Baru*\n\nNama: {nama}\nNominal: Rp{nominal:,}\nID: `{trx_id}`", 
-            parse_mode="Markdown", reply_markup=markup
-        )
-
 class IuranHandler:
     def __init__(self, bot: telebot.TeleBot, sm: StateMachine, kas_repo: KasRepository):
         self.bot = bot
         self.sm = sm
         self.kas_repo = kas_repo
-        self.approval = ApprovalHandler(bot)
 
     def initiate(self, tid: str, message: telebot.types.Message):
         self.sm.set_state(tid, "flow", "IURAN")
@@ -347,14 +242,9 @@ class IuranHandler:
             kategori = self.sm.get_state(tid, "kategori")
             nominal = self.sm.get_state(tid, "nominal")
             
-            trx_id = str(uuid.uuid4())
-            trx = KasTransaction(trx_id, user.id, nama, kategori, nominal, datetime.datetime.now(), "Pending")
+            trx = KasTransaction(str(uuid.uuid4()), user.id, nama, kategori, nominal, datetime.datetime.now())
             self.kas_repo.save(trx)
             self.sm.clear_state(tid)
-            
-            # TRIGGER APPROVAL ADMIN
-            self.approval.send_approval_request(trx_id, nama, nominal)
-            
             self.bot.reply_to(message, f"✅ Data Iuran Tersimpan!\n\nNama: {nama}\nKategori: {kategori}\nNominal: Rp{nominal:,}\n\nMenunggu verifikasi admin.", reply_markup=get_main_menu())
         return True
 
@@ -365,6 +255,7 @@ class MentionHandler:
     def process_mentions(self, text: str, sender_name: str):
         usernames = re.findall(r"@(\w+)", text)
         for uname in usernames:
+            # 1. BUAT AI PROMPT (Pasti jalan tanpa nunggu validasi database)
             prompt = (
                 f"Anda adalah SATRIA, asisten RT. Warga bernama {sender_name} baru saja melaporkan masalah. "
                 f"Dia sengaja mengetag @{uname} sebagai pihak pembuat masalah. "
@@ -374,20 +265,26 @@ class MentionHandler:
             )
             ai_msg = self.ai.generate_response(prompt)
             
+            # 2. SELALU KIRIM KE GRUP (Teguran Terbuka)
             if config.group_id:
                 try: 
                     self.bot.send_message(config.group_id, f"⚠️ *Teguran Terbuka untuk @{uname}:*\n\n{ai_msg}", parse_mode="Markdown")
+                    logger.info(f"Teguran AI untuk @{uname} dikirim ke grup.")
                 except Exception as e: 
                     logger.error(f"Gagal kirim teguran ke grup: {e}")
 
+            # 3. KIRIM JAPRI HANYA JIKA TARGET SUDAH DAFTAR BOT
             target = self.user_repo.find_by_username(uname)
             if target:
                 try: 
                     self.bot.send_message(target.telegram_id, f"🚨 *Peringatan Keamanan Lingkungan RT*\n\n{ai_msg}", parse_mode="Markdown")
-                except Exception as e: pass
+                except Exception as e: 
+                    logger.error(f"Gagal Japri target: {e}")
+            else:
+                logger.info(f"@{uname} belum terdaftar di database bot, skip Japri.")
 
 # =====================================================================
-# 7. APPLICATION FACTORY
+# 6. APPLICATION FACTORY
 # =====================================================================
 class SATRIAApp:
     def __init__(self):
@@ -403,24 +300,6 @@ class SATRIAApp:
         self.mention_handler = MentionHandler(self.ai, self.bot, self.user_repo)
 
     def setup_routes(self):
-        
-        # HANDLER UNTUK TOMBOL APPROVAL ADMIN
-        @self.bot.callback_query_handler(func=lambda call: call.data.startswith("appr_"))
-        def handle_approval(call):
-            action = call.data.split("_")[1]
-            trx_id = call.data.split("_")[2]
-            status = 'Approved' if action == 'ok' else 'Rejected'
-            
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("UPDATE kas_transactions SET status = %s WHERE id = %s", (status, trx_id))
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            pesan = "✅ Iuran Disetujui" if action == 'ok' else "❌ Iuran Ditolak"
-            self.bot.edit_message_text(pesan, call.message.chat.id, call.message.message_id)
-
         @self.bot.message_handler(commands=['start'])
         def handle_start(message: telebot.types.Message):
             tid = str(message.from_user.id)
@@ -433,7 +312,7 @@ class SATRIAApp:
                     created_at=datetime.datetime.now()
                 )
                 self.user_repo.save(user)
-            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise PostgreSQL Aktif.", reply_markup=get_main_menu())
+            self.bot.reply_to(message, "Sistem SATRIA RT Enterprise v8.1 Aktif.", reply_markup=get_main_menu())
 
         @self.bot.message_handler(content_types=['text', 'photo'])
         def handle_all(message: telebot.types.Message):
@@ -473,14 +352,17 @@ class SATRIAApp:
             elif "lapor" in text.lower() or "masalah" in text.lower() or "keluhan" in text.lower():
                 report = CitizenReport(str(uuid.uuid4()), user.id, user.full_name, text, datetime.datetime.now())
                 self.report_repo.save(report)
+                
                 self.bot.reply_to(message, "✅ Laporan Anda berhasil dicatat ke sistem dan masuk menu 'Cek Laporan'.")
                 
                 if config.group_id:
                     try: self.bot.send_message(config.group_id, f"📢 *Laporan Warga Masuk*\n*Dari:* {user.full_name}\n*Isi:* {text}")
                     except: pass
                 
+                # Eksekusi pengecekan mention di background worker (tidak bikin bot lag)
                 def trigger_mention_ai():
                     self.mention_handler.process_mentions(text, user.full_name)
+                
                 self.worker.submit(trigger_mention_ai)
                 return
 
